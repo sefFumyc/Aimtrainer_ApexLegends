@@ -119,8 +119,6 @@ func _on_shot_fired(id: StringName) -> void:
 	var origin := player.eye_position()
 	var direction := player.aim_direction()
 	var ray := PhysicsRayQueryParameters3D.create(origin, origin + direction * FIRE_RANGE, 1)
-	ray.collide_with_areas = true
-	ray.collide_with_bodies = true
 	ray.exclude = [player.get_rid()]
 	var hit := player.get_world_3d().direct_space_state.intersect_ray(ray)
 
@@ -132,9 +130,8 @@ func _on_shot_fired(id: StringName) -> void:
 		var collider: Object = hit["collider"]
 		if collider is Target:
 			shot_target = collider
-		elif collider is Area3D and collider.get_parent() is Target:
-			shot_target = collider.get_parent()
-			headshot = true
+			# 命中形状所属部件名含 head/helmet 即爆头（靶命中体由模型部件几何构成）
+			headshot = shot_target.is_headshot(hit["shape"])
 
 	if shot_target == null:
 		_play_sound(_shot_audio, SHOT_VOLUME, _shot_pitch())
