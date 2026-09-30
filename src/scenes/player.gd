@@ -1,0 +1,175 @@
+## 玩家：移动（ADR-0002）、视角、开镜、切枪与开火节奏。
+##
+## `CharacterBody3D` **只做碰撞求解**：水平速度全部由 `MovementSimulator` 按固定子步 1/240
+## 算好，这里每帧只把「本帧位移 ÷ delta」喂给 `velocity` 交给 `move_and_slide()`，
+## 再把求解后的真实位置回写给 sim——不使用 Godot 自带的加速与摩擦。
+##
+## 垂直方向不走物理：跳跃高度由 sim 的 `height()` 决定，相机跟着抬（与参考实现同构）。
+
+class_name Player
+extends CharacterBody3D
+
+## 开火一次（含连射的每一发）。由 main 接走去射线判定与特效。
+signal shot_fired(id: StringName)
+signal weapon_changed(id: StringName)
+
+const PITCH_LIMIT := 1.55
+const GAMEPAD_LOOK_BASE := 2.5
+const ZOOM_IN_TIME := 0.22
+const ZOOM_OUT_TIME := 0.088
+const FOV := 92.35
+const ZOOM_FOV := 76.64
+
+@onready var camera: Camera3D = $Camera3D
+@onready var viewmodel: Viewmodel = $Viewmodel
+
+var sim := MovementSimulator.new()
+var weapon: StringName = Weapon.RIFLE
+var yaw := 0.0
+var pitch := 0.0
+var zoom_p := 0.0
+## 关掉后不再响应键鼠/手柄（失焦、菜单打开时用）。
+var input_enabled := true
+
+var _fire := Weapon.new(Weapon.RIFLE)
+var _pad := -1
+
+func _ready() -> void:
+	# 主相机不看武器层；武器相机只看武器层（ADR-0008 的几何隔离）。
+	camera.cull_mask = 0xFFFFF & ~Viewmodel.WEAPON_LAYER
+	camera.fov = FOV
+	viewmodel.set_weapon(weapon)
+	_refresh_gamepad()
+
+func _unhandled_input(event: InputEvent) -> void:
+	if not input_enabled or _pad >= 0:
+		return # 手柄连着就忽略鼠标（ADR-0003）
+	if event is InputEventMouseMotion:
+		var mm := event as InputEventMouseMotion
+		apply_look(-mm.relative.x * _sensitivity(), -mm.relative.y * _sensitivity())
+
+func _physics_process(delta: float) -> void:
+	_refresh_gamepad()
+	if input_enabled:
+		_tick_look(delta)
+		_tick_weapon(delta)
+	_tick_zoom(delta)
+	_tick_move(delta)
+
+# ---- 视角 ----
+
+## 鼠标/摇杆直接叠加视角增量（俯仰上限 ±1.55 rad）。
+func apply_look(d_yaw: float, d_pitch: float) -> void:
+	yaw += d_yaw
+	pitch = clampf(pitch + d_pitch, -PITCH_LIMIT, PITCH_LIMIT)
+
+## 当前生效的鼠标灵敏度：开镜时按倍率缩放（参考实现 ADR-0021）。
+func _sensitivity() -> float:
+	var mult := 1.0 - (1.0 - GameSettings.ads_sens_mult) * zoom_p
+	return GameSettings.mouse_sensitivity * mult
+
+func _tick_look(delta: float) -> void:
+	if _pad < 0:
+		return
+	var x := Input.get_joy_axis(_pad, JOY_AXIS_RIGHT_X)
+	var y := Input.get_joy_axis(_pad, JOY_AXIS_RIGHT_Y)
+	var k := GAMEPAD_LOOK_BASE * _sensitivity() * delta
+	apply_look(-x * k, -y * k)
+
+# ---- 开镜 ----
+
+func _tick_zoom(delta: float) -> void:
+	var want := 0.0
+	if input_enabled and Input.is_action_pressed("ads"):
+		want = 1.0
+	var rate := 1.0 / (ZOOM_IN_TIME if want > zoom_p else ZOOM_OUT_TIME)
+	zoom_p = move_toward(zoom_p, want, rate * delta)
+	camera.fov = lerpf(FOV, ZOOM_FOV, zoom_p)
+	sim.set_zoom(zoom_p)
+	viewmodel.apply_zoom(zoom_p)
+
+# ---- 移动 ----
+
+func _tick_move(delta: float) -> void:
+	sim.set_facing(yaw)
+	sim.set_control(_read_control())
+	var before := sim.position()
+	sim.advance(delta)
+	var after := sim.position()
+	var step := (after - before) / delta if delta > 1e-6 else Vector2.ZERO
+
+	# 垂直交给 sim（跳跃高度由 height() 决定），物理只解水平碰撞。
+	velocity = Vector3(step.x, 0.0, step.y)
+	move_and_slide()
+
+	# 位置回写与强制贴地：碰撞求解的结果才是下一帧的起点。
+	global_position.y = 0.0
+	sim.sync_position(Vector2(global_position.x, global_position.z))
+	camera.position = Vector3(0.0, Physique.EYE_HEIGHT + sim.height(), 0.0)
+	camera.rotation = Vector3(pitch, yaw, 0.0)
+
+func _read_control() -> MovementSimulator.MoveControl:
+	var c := MovementSimulator.MoveControl.new()
+	if not input_enabled:
+		return c
+	if _pad >= 0:
+		var sm := StickMove.from_axes(
+			Input.get_joy_axis(_pad, JOY_AXIS_LEFT_X), Input.get_joy_axis(_pad, JOY_AXIS_LEFT_Y)
+		)
+		c.right = sm.right
+		c.fwd = sm.fwd
+		c.sprint = sm.sprint
+	else:
+		c.right = float(Input.is_action_pressed("move_right")) - float(Input.is_action_pressed("move_left"))
+		c.fwd = float(Input.is_action_pressed("move_forward")) - float(Input.is_action_pressed("move_back"))
+		c.sprint = Input.is_action_pressed("sprint")
+	c.crouch = Input.is_action_pressed("crouch")
+	c.jump = Input.is_action_pressed("jump")
+	return c
+
+# ---- 武器 ----
+
+func set_weapon(id: StringName) -> void:
+	if id == weapon:
+		return
+	weapon = id
+	_fire = Weapon.new(id)
+	viewmodel.set_weapon(id)
+	weapon_changed.emit(id)
+
+func switch_weapon() -> void:
+	set_weapon(Weapon.other(weapon))
+
+func _tick_weapon(delta: float) -> void:
+	# 切枪：1 / 2 直接选，Q（手柄 Y）就近切。切枪会丢弃手枪缓冲并让下一发立即就绪。
+	if Input.is_action_just_pressed("weapon_rifle"):
+		set_weapon(Weapon.RIFLE)
+	elif Input.is_action_just_pressed("weapon_pistol"):
+		set_weapon(Weapon.PISTOL)
+	elif Input.is_action_just_pressed("weapon_switch"):
+		switch_weapon()
+
+	var held := Input.is_action_pressed("fire")
+	# 手枪是单发：点击边沿喂一发；`press()` 返回 true 表示「冷却就绪、当场开火」，
+	# 返回 false 表示冷却中、已缓冲一发（交给 advance 在冷却结束时补发）。
+	if not Weapon.automatic(weapon) and Input.is_action_just_pressed("fire"):
+		if _fire.press():
+			shot_fired.emit(weapon)
+	for i in _fire.advance(delta, held):
+		shot_fired.emit(weapon)
+
+## 当前武器枪口的世界坐标（火光与曳光弹起点）。
+func muzzle_world() -> Vector3:
+	return viewmodel.muzzle_world()
+
+## 玩家眼位（射线起点）。
+func eye_position() -> Vector3:
+	return camera.global_position
+
+## 准星方向（射线方向）。
+func aim_direction() -> Vector3:
+	return -camera.global_transform.basis.z
+
+func _refresh_gamepad() -> void:
+	var pads := Input.get_connected_joypads()
+	_pad = pads[0] if pads.size() > 0 else -1

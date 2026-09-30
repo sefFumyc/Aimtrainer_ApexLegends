@@ -1,0 +1,53 @@
+[gd_scene load_steps=11 format=3]
+
+[ext_resource type="Script" path="res://src/scenes/main.gd" id="1_main"]
+[ext_resource type="PackedScene" path="res://src/scenes/arena.tscn" id="2_arena"]
+[ext_resource type="PackedScene" path="res://src/scenes/player.tscn" id="3_player"]
+[ext_resource type="PackedScene" path="res://src/scenes/target.tscn" id="4_target"]
+[ext_resource type="PackedScene" path="res://src/scenes/hud.tscn" id="5_hud"]
+[ext_resource type="Script" path="res://src/scenes/settings_panel.gd" id="6_settings"]
+
+[sub_resource type="ProceduralSkyMaterial" id="ProceduralSkyMaterial_sky"]
+sky_top_color = Color(0.18, 0.43, 0.77, 1)
+sky_horizon_color = Color(0.91, 0.95, 0.98, 1)
+ground_bottom_color = Color(0.55, 0.5, 0.4, 1)
+ground_horizon_color = Color(0.91, 0.95, 0.98, 1)
+
+[sub_resource type="Sky" id="Sky_main"]
+sky_material = SubResource("ProceduralSkyMaterial_sky")
+
+[sub_resource type="Environment" id="Environment_main"]
+background_mode = 2
+sky = SubResource("Sky_main")
+ambient_light_source = 3
+ambient_light_energy = 0.7
+tonemap_mode = 2
+
+[node name="Main" type="Node3D"]
+script = ExtResource("1_main")
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("Environment_main")
+
+[node name="Sun" type="DirectionalLight3D" parent="."]
+transform = Transform3D(0.78, 0.35, -0.52, 0, 0.83, 0.56, 0.63, -0.44, 0.64, 0, 400, 0)
+light_energy = 1.6
+shadow_enabled = true
+
+[node name="Arena" parent="." instance=ExtResource("2_arena")]
+
+[node name="Player" parent="." instance=ExtResource("3_player")]
+
+[node name="Target" parent="." instance=ExtResource("4_target")]
+
+[node name="HudLayer" type="CanvasLayer" parent="."]
+
+[node name="Hud" parent="HudLayer" instance=ExtResource("5_hud")]
+
+[node name="SettingsPanel" type="Control" parent="HudLayer"]
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("6_settings")

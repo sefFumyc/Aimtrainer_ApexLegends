@@ -1,0 +1,26 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://src/scenes/viewmodel.gd" id="1_viewmodel"]
+
+[node name="Viewmodel" type="SubViewportContainer"]
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+stretch = true
+script = ExtResource("1_viewmodel")
+
+[node name="SubViewport" type="SubViewport" parent="."]
+transparent_bg = true
+own_world_3d = true
+handle_input_locally = false
+render_target_update_mode = 4
+
+[node name="WeaponCamera" type="Camera3D" parent="SubViewport"]
+near = 0.05
+far = 200.0
+fov = 92.35
+
+[node name="WeaponRig" type="Node3D" parent="SubViewport/WeaponCamera"]

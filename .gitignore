@@ -1,0 +1,7 @@
+# Godot 4.1+ 官方建议忽略项
+.godot/
+*.translation
+
+# 系统杂项
+Thumbs.db
+.DS_Store
