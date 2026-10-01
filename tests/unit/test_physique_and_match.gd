@@ -51,6 +51,32 @@ func test_heal_caps_at_max_hp() -> void:
 	m.heal_bot(25)
 	assert_eq(m.bot_hp, 125)
 
+func test_accuracy_is_rounded_to_one_decimal() -> void:
+	var m := DuelMatch.new()
+	m.record_shot(true)
+	m.record_shot(false)
+	m.record_shot(false)
+	assert_almost_eq(m.accuracy(), 33.3, 1e-9, "准确率保留一位小数，实时与结算同口径")
+
+func test_settlement_snapshot_freezes_live_values() -> void:
+	var m := DuelMatch.new()
+	assert_null(m.last_snapshot(), "从未结算过返回 null")
+	m.record_shot(true)
+	m.record_shot(false)
+	m.record_shot(true)
+	m.record_kill()
+	m.record_death()
+	m.elapsed = 42.5
+	var snap := m.settle()
+	assert_almost_eq(snap.accuracy, m.accuracy(), 1e-9, "结算快照与实时口径一致")
+	assert_eq(snap.kills, 1)
+	assert_eq(snap.deaths, 1)
+	assert_almost_eq(snap.elapsed, 42.5, 1e-9)
+	# 快照是定格的：之后继续对局不改动已定格的值
+	m.record_shot(false)
+	assert_eq(m.last_snapshot().accuracy, snap.accuracy, "读取的是快照不是实时滚动值")
+	assert_eq(m.last_snapshot().kills, 1)
+
 func test_stick_8way_discretization() -> void:
 	var none := StickMove.from_axes(0.05, -0.05)
 	assert_eq(none.right, 0.0, "死区内静止")

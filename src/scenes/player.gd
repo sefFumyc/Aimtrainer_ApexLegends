@@ -68,12 +68,17 @@ func _sensitivity() -> float:
 	var mult := 1.0 - (1.0 - GameSettings.ads_sens_mult) * zoom_p
 	return GameSettings.mouse_sensitivity * mult
 
+## 手柄灵敏度与鼠标分开设定（CONTEXT「灵敏度」），开镜倍率共用。
+func _pad_sensitivity() -> float:
+	var mult := 1.0 - (1.0 - GameSettings.ads_sens_mult) * zoom_p
+	return GameSettings.gamepad_sensitivity * mult
+
 func _tick_look(delta: float) -> void:
 	if _pad < 0:
 		return
 	var x := Input.get_joy_axis(_pad, JOY_AXIS_RIGHT_X)
 	var y := Input.get_joy_axis(_pad, JOY_AXIS_RIGHT_Y)
-	var k := GAMEPAD_LOOK_BASE * _sensitivity() * delta
+	var k := GAMEPAD_LOOK_BASE * _pad_sensitivity() * delta
 	apply_look(-x * k, -y * k)
 
 # ---- 开镜 ----

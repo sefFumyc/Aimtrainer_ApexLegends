@@ -1,4 +1,4 @@
-[gd_scene load_steps=11 format=3]
+[gd_scene load_steps=14 format=3]
 
 [ext_resource type="Script" path="res://src/scenes/main.gd" id="1_main"]
 [ext_resource type="PackedScene" path="res://src/scenes/arena.tscn" id="2_arena"]
@@ -6,6 +6,9 @@
 [ext_resource type="PackedScene" path="res://src/scenes/target.tscn" id="4_target"]
 [ext_resource type="PackedScene" path="res://src/scenes/hud.tscn" id="5_hud"]
 [ext_resource type="Script" path="res://src/scenes/settings_panel.gd" id="6_settings"]
+[ext_resource type="Script" path="res://src/scenes/main_menu.gd" id="7_menu"]
+[ext_resource type="Script" path="res://src/scenes/settlement_screen.gd" id="8_settlement"]
+[ext_resource type="Script" path="res://src/scenes/timer_overlay.gd" id="9_timer_overlay"]
 
 [sub_resource type="ProceduralSkyMaterial" id="ProceduralSkyMaterial_sky"]
 sky_top_color = Color(0.18, 0.43, 0.77, 1)
@@ -43,6 +46,30 @@ shadow_enabled = true
 [node name="HudLayer" type="CanvasLayer" parent="."]
 
 [node name="Hud" parent="HudLayer" instance=ExtResource("5_hud")]
+
+[node name="TimerOverlay" type="Control" parent="HudLayer"]
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("9_timer_overlay")
+
+[node name="MainMenu" type="Control" parent="HudLayer"]
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("7_menu")
+
+[node name="SettlementScreen" type="Control" parent="HudLayer"]
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("8_settlement")
 
 [node name="SettingsPanel" type="Control" parent="HudLayer"]
 anchors_preset = 15

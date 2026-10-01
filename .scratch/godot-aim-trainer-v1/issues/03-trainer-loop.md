@@ -1,6 +1,6 @@
 # 03 — 切片三：训练器功能面
 
-Status: ready-for-agent
+Status: done
 
 对应 spec: `../spec.md`（切片三）。术语以 `CONTEXT.md` 为准。依赖票 01、02。
 
@@ -66,3 +66,19 @@ Status: ready-for-agent
 - 预设的「自动写回」是刻意设计（避免多一次保存动作），不要改成显式保存按钮。
 
 ## Comments
+
+**已实现并收尾**（三层分离，ADR-0009）：
+
+- 纯逻辑：`src/logic/interval_timer.gd`（准备 / 游玩 / 休息阶段机 + 会话累计 + 无尾休息 + 整秒事件，`tick` 每帧最多一个事件）、`src/logic/auto_radius.gd`（`old × 10^(0.3×(目标−实际))`，返回未钳制值）、`src/logic/preset_store.gd`（19 项 String 键预设 + 活文档写回 + 重名/空名守卫 + 损坏预设跳过）；`duel_match.gd` 加结算快照 `settle()` / `last_snapshot()`，准确率统一为一位小数（0 发返回 −1）。
+- 设置：`game_settings.gd` 加计时 / 吸血 / 自动调径 / 手柄灵敏度 / 画面质量两档 / 预设持久化，并提供 `capture_preset` / `apply_preset` / `select_preset` / `save_preset` / `erase_preset` / `write_param`（`write_param` 在选中预设时自动写回该预设，否则写全局）。
+- 场景：`settings_panel.gd` 改 5 分页（目标与 bot / 躲避与移动 / 画面与输入 / 计时器 / 预设），切预设后回灌控件；新增 `main_menu.gd` / `settlement_screen.gd` / `timer_overlay.gd`；`main.gd` 加舞台机（菜单 / 对局 / 准备 / 休息 / 结算）、计时驱动、自动调径（逐段「半径 旧→新」）、画质映射（glow/ssao/阴影距离/阴影图集尺寸）与两个哔声播放器。
+- 音频：`tools/gen_audio.gd` 增 660Hz 预哔（`pre_beep.wav`）与 990Hz 开始哔（`start_beep.wav`），产物入库。
+- 验证：GUT **127 tests / 1095 asserts 全绿**；真实主场景 headless 启动**零 ERROR / WARNING**；临时冒烟驱动（验证后已删）跑通「主菜单→对局→ESC 结算」与「准备→游玩→休息×3→游玩→结算」（4 段游玩 3 次休息，确认无尾休息），12 项断言全过。
+
+**实现取舍**：
+
+- 「预哔」按 CONTEXT 定义实现为「每环节（含准备段）切换前 5 秒每秒一声」——游玩段与休息段最后 5 秒同样逐秒预哔，不只准备段。
+- 「开始哔」按 CONTEXT「游玩开始 / 休息开始共用同一音」在 prepare→play、play→rest、rest→play 三处播放（收尾时补上 play→rest 这一处）。
+- 自动调径只在本段有射击数据时生效（0 发跳过）；`roundf` 吸附整数步进、`clampf` 到 4–60。每段（含末段）都追加一行「半径 旧→新」——整数吸附后数值没变也照样记一行（CONTEXT 里唯一的跳过条件是「本段 0 发」）。
+
+**代码评审后的修正**（`/code-review` 双轴）：补上 play→rest 的「开始哔」；自动调径去掉「半径不变就整段不记录」的早退；准确率公式收敛为全局唯一口径 `DuelMatch.accuracy_percent()`（HUD / 结算快照 / 会话累计 / 休息覆盖层共用），`IntervalTimer.total_accuracy()` 与 `main._round_stats_text()` 改为复用它；`GameSettings.capture_preset()` 改为遍历 `PresetStore.FIELDS`，不再手写 19 项重复清单；删掉 `preset_store.gd` 里指向不存在的 ADR 的引用。

@@ -3,7 +3,8 @@
 ## 用法（一次性，产物提交进仓库）：
 ##   godot --headless --path . -s tools/gen_audio.gd
 ##
-## 生成三种音：枪声 155Hz、击中 200Hz、击杀 240ms 上行两音（660→990Hz）。
+## 生成五种音：枪声 155Hz、击中 200Hz、击杀 240ms 上行两音（660→990Hz），
+## 以及计时会话的两个提示音——准备段逐秒预哔 660Hz、开始哔 990Hz（票 03）。
 ## 包络与参考实现逐字一致：约 30ms 时长、4ms 缓起音、陡衰减、无噪声瞬态。
 
 extends SceneTree
@@ -17,6 +18,8 @@ func _initialize() -> void:
 	_write("shot.wav", _make_shot())
 	_write("hit.wav", _make_hit())
 	_write("kill.wav", _make_kill())
+	_write("pre_beep.wav", _make_pre_beep())
+	_write("start_beep.wav", _make_start_beep())
 	quit()
 
 ## 枪声 / 击中音：单频爆点，30ms、(1−p)^4 陡衰减、幅值 0.48。
@@ -57,6 +60,14 @@ func _make_kill() -> PackedFloat32Array:
 			v += (sin(TAU * f * dt) + 0.35 * sin(TAU * 2.0 * f * dt)) * pow(1.0 - p, 2.0) * attack
 		out[i] = v * 0.28
 	return out
+
+## 预哔：准备段逐秒提示音（660Hz），包络与枪声同款。
+func _make_pre_beep() -> PackedFloat32Array:
+	return _burst(660.0)
+
+## 开始哔：游玩段起点的提示音（990Hz），包络与枪声同款。
+func _make_start_beep() -> PackedFloat32Array:
+	return _burst(990.0)
 
 func _write(file_name: String, samples: PackedFloat32Array) -> void:
 	var bytes := PackedByteArray()

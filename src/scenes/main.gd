@@ -1,10 +1,16 @@
-## 主场景：把场地、玩家、靶、HUD 与设置串成最小可玩闭环。
+## 主场景：把场地、玩家、靶、HUD、界面与设置串成完整闭环。
 ##
-## 开火判定、伤害、双方的刷新与特效都收在这里——切片一只有一个受击体，不值得再拆一层。
-## 切片二起靶有了完整 AI（`BotAi`），但**感知装配**留在本层：它是唯一同时握着玩家、设置、
-## 场地与物理空间的地方；`Target` 只做 AI 的碰撞载体与表现层（ADR-0009 三层分离）。
+## 开火判定、伤害、双方的刷新与特效都收在这里——它是唯一同时握着玩家、设置、场地与物理空间
+## 的地方；`Target` 只做 AI 的碰撞载体与表现层（ADR-0009 三层分离）。
+##
+## 舞台机（票 03）：主菜单 → 对局 → 结算；「间隔计时器」开启时走
+## 准备段 → 游玩段 → 休息段 → … → 最终结算（无尾休息）。计时会话只能从主菜单「开始」触发，
+## 结算屏「新开一局」永远是普通对局（CONTEXT「间隔计时器」）。
 
 extends Node3D
+
+## 舞台：主菜单 / 对局（普通或计时游玩段共用）/ 计时准备段 / 计时休息段 / 结算。
+enum Stage { MENU, PLAY, TIMER_PREPARE, TIMER_REST, SETTLEMENT }
 
 const FIRE_RANGE := 3000.0 ## 射线最大长度（与相机远裁剪面同量级）
 const FLASH_LIFE := 0.05 ## 枪口火光存活时长（秒，取自参考实现 flashTotal）
@@ -19,6 +25,7 @@ const SPAWN_CLEARANCE := 30.0 ## 刷新点与遮挡物的最小余量
 const SPAWN_BOUNDARY_MARGIN := 60.0 ## 刷新点与场地边界的最小余量
 const BOT_TRACER_HEIGHT := 33.0 ## bot 曳光终点高度（玩家身体中段，纯视觉）
 const RESPAWN_OFFSET_MARGIN := PI / 36.0 ## 「玩家重生」朝向的额外缓冲（5°）
+const TIMER_DT_CLAMP := 0.1 ## 计时器单帧最大推进量：保证 `tick` 每帧最多跨一个整秒边界
 
 ## 碰撞层（票 02）：世界（地面 / 遮挡物）/ 靶命中体 / 玩家本体。靶的**移动本体**另占一层
 ## （`Target.MOVE_LAYER`）且不在任何射线的 mask 里——命中体与移动碰撞体是两件事（ADR-0014）。
@@ -26,17 +33,22 @@ const WORLD_LAYER := 1
 const BOT_LAYER := 2
 const PLAYER_LAYER := 4
 
-## 音频（票 01 第 9 节）：三份定频资产入库，音高微差靠播放器 pitch_scale，不预生成变体。
+## 音频：五份定频资产入库，音高微差靠播放器 pitch_scale，不预生成变体（ADR-0012）。
 ## 音量与爆头音高取自参考实现 playShotSound / playHitSound / playKillSound。
 const SHOT_SOUND := "res://assets/audio/shot.wav"
 const HIT_SOUND := "res://assets/audio/hit.wav"
 const KILL_SOUND := "res://assets/audio/kill.wav"
+const PRE_BEEP_SOUND := "res://assets/audio/pre_beep.wav"
+const START_BEEP_SOUND := "res://assets/audio/start_beep.wav"
 const SHOT_VOLUME := 0.18
 const HIT_VOLUME := 0.29
 const HEADSHOT_VOLUME := 0.36
 const KILL_VOLUME := 0.42
+const PRE_BEEP_VOLUME := 0.26
+const START_BEEP_VOLUME := 0.32
 const PITCH_JITTER := 0.05 ## ±5% 音高微差
 const HEADSHOT_PITCH := 1.122462 ## 2^(2/12)，爆头 +2 半音
+const PRE_BEEP_SECONDS := 5 ## 「预哔」：环节切换前 5 秒每秒一声
 
 ## 一组「枪口火光 + 曳光弹」表现节点：玩家与 bot 各一组，互不抢用。
 class Fx:
@@ -50,9 +62,23 @@ class Fx:
 @onready var player: Player = $Player
 @onready var target: Target = $Target
 @onready var hud: Hud = $HudLayer/Hud
+@onready var timer_overlay: TimerOverlay = $HudLayer/TimerOverlay
+@onready var main_menu: MainMenu = $HudLayer/MainMenu
+@onready var settlement: SettlementScreen = $HudLayer/SettlementScreen
 @onready var settings_panel: SettingsPanel = $HudLayer/SettingsPanel
+@onready var world_env: WorldEnvironment = $WorldEnvironment
+@onready var sun: DirectionalLight3D = $Sun
 
 var match_state := DuelMatch.new()
+var stage: Stage = Stage.MENU
+
+var _timer := IntervalTimer.new()
+## 本次对局是不是「计时会话」里的游玩段（决定 ESC / 段结束的结算口径）。
+var _timer_active := false
+## 刚结束那一段的战绩（休息覆盖层显示「本轮战绩」）。
+var _last_round_stats: IntervalTimer.RoundStats = null
+## 本次会话的自动调径记录（「半径 旧→新」逐段追加，最终结算一并列出）。
+var _radius_log: Array[String] = []
 
 var _fx: Fx
 var _bot_fx: Fx
@@ -60,6 +86,8 @@ var _bot_fx: Fx
 var _shot_audio: AudioStreamPlayer
 var _hit_audio: AudioStreamPlayer
 var _kill_audio: AudioStreamPlayer
+var _pre_beep_audio: AudioStreamPlayer
+var _start_beep_audio: AudioStreamPlayer
 
 ## 每帧装配一次的 bot 感知；玩家开火（物理帧）也复用它，不必重算。
 var _perception := BotAi.Perception.new()
@@ -69,13 +97,15 @@ func _ready() -> void:
 	_build_fx()
 	_build_audio()
 	player.shot_fired.connect(_on_shot_fired)
-	settings_panel.opened.connect(_set_game_input.bind(false))
-	settings_panel.closed.connect(_set_game_input.bind(true))
+	settings_panel.opened.connect(_refresh_input)
+	settings_panel.closed.connect(_refresh_input)
 	settings_panel.changed.connect(_apply_settings)
+	main_menu.start_pressed.connect(_on_menu_start)
+	main_menu.settings_pressed.connect(func() -> void: settings_panel.toggle())
+	settlement.new_round_pressed.connect(_start_duel)
+	settlement.menu_pressed.connect(_show_menu)
 	_apply_settings()
-	_respawn_target()
-	_build_perception()
-	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+	_show_menu()
 
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_WM_CLOSE_REQUEST:
@@ -83,7 +113,10 @@ func _notification(what: int) -> void:
 
 ## 靶的推进放在**物理帧**（与 Player 同构）：`move_and_slide()` 用的是物理帧 delta，
 ## 若从 `_process` 调用，靶的移速会随显示刷新率变化（高刷屏上快好几倍）。
+## 只有对局进行中才推进——主菜单 / 准备段 / 休息段 / 结算时靶被撤下且不结算。
 func _physics_process(delta: float) -> void:
+	if stage != Stage.PLAY:
+		return
 	_build_perception()
 	for hit in target.tick(delta, _perception):
 		_resolve_bot_shot(hit)
@@ -93,7 +126,10 @@ func _physics_process(delta: float) -> void:
 
 ## 表现与热键留在渲染帧：特效的存活时长按渲染 delta 走，不必跟物理帧对齐。
 func _process(delta: float) -> void:
-	match_state.elapsed += delta
+	if stage == Stage.PLAY:
+		match_state.elapsed += delta
+	if _timer_active:
+		_drive_timer(minf(delta, TIMER_DT_CLAMP))
 	_tick_fx(_fx, delta)
 	_tick_fx(_bot_fx, delta)
 	_tick_hotkeys()
@@ -102,15 +138,190 @@ func _tick_hotkeys() -> void:
 	if Input.is_action_just_pressed("toggle_settings"):
 		settings_panel.toggle()
 		return
-	if Input.is_action_just_pressed("ui_cancel") and not settings_panel.visible:
-		Input.mouse_mode = (
-			Input.MOUSE_MODE_VISIBLE if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED
-			else Input.MOUSE_MODE_CAPTURED
-		)
+	if Input.is_action_just_pressed("ui_cancel"):
+		_on_escape()
 
-func _set_game_input(on: bool) -> void:
-	player.input_enabled = on
-	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED if on else Input.MOUSE_MODE_VISIBLE
+## ESC：菜单 / 结算下不做事；对局与计时会话的任一阶段都结束本局并给出结算。
+func _on_escape() -> void:
+	if settings_panel.visible:
+		settings_panel.toggle()
+		return
+	match stage:
+		Stage.PLAY, Stage.TIMER_PREPARE, Stage.TIMER_REST:
+			_end_session()
+
+## 输入闸门：只有「对局进行中且设置面板没打开」时才captured 键鼠（ADR-0003 的输入独占不变）。
+func _refresh_input() -> void:
+	var playing := stage == Stage.PLAY and not settings_panel.visible
+	player.input_enabled = playing
+	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED if playing else Input.MOUSE_MODE_VISIBLE
+
+# ---- 舞台切换 ----
+
+## 主菜单（CONTEXT「主菜单」）：撤下靶、取消计时会话、交还鼠标。
+func _show_menu() -> void:
+	stage = Stage.MENU
+	_timer_active = false
+	_timer.cancel()
+	target.despawn()
+	timer_overlay.hide_overlay()
+	settlement.visible = false
+	main_menu.open()
+	_refresh_input()
+
+func _on_menu_start() -> void:
+	main_menu.visible = false
+	if GameSettings.timer_enabled:
+		_start_timer_session()
+	else:
+		_start_duel()
+
+## 普通对局（含结算屏「新开一局」）：无计时，无尽练习。
+func _start_duel() -> void:
+	_timer_active = false
+	_timer.cancel()
+	_radius_log.clear()
+	_last_round_stats = null
+	main_menu.visible = false
+	settlement.visible = false
+	timer_overlay.hide_overlay()
+	_begin_play_round()
+
+## 计时会话（CONTEXT「计时会话」）：先进入准备段，5 秒后自动开始第一游玩段。
+func _start_timer_session() -> void:
+	_timer_active = true
+	_radius_log.clear()
+	_last_round_stats = null
+	settlement.visible = false
+	_timer.start(GameSettings.timer_play_seconds, GameSettings.timer_rest_seconds, GameSettings.timer_repeat)
+	stage = Stage.TIMER_PREPARE
+	match_state.reset()
+	target.despawn()
+	timer_overlay.show_prepare(IntervalTimer.PREPARE_SECONDS)
+	_play_sound(_pre_beep_audio, PRE_BEEP_VOLUME, 1.0) # 准备段第一秒也发一声
+	_refresh_input()
+
+## 开始一个游玩段：每段 = 新的一局（对局数据清零重计，CONTEXT「游玩段」）。
+func _begin_play_round() -> void:
+	match_state.reset()
+	stage = Stage.PLAY
+	timer_overlay.hide_overlay()
+	_respawn_target()
+	_refresh_input()
+
+# ---- 计时会话 ----
+
+func _drive_timer(dt: float) -> void:
+	var event := _timer.tick(dt)
+	match event.type:
+		IntervalTimer.Event.SECOND:
+			if event.remaining <= PRE_BEEP_SECONDS:
+				_play_sound(_pre_beep_audio, PRE_BEEP_VOLUME, 1.0)
+			timer_overlay.set_seconds(event.remaining)
+		IntervalTimer.Event.PREPARE_END:
+			_play_sound(_start_beep_audio, START_BEEP_VOLUME, 1.0)
+			_begin_play_round()
+		IntervalTimer.Event.PLAY_END:
+			_end_play_round(event.last)
+		IntervalTimer.Event.REST_END:
+			_play_sound(_start_beep_audio, START_BEEP_VOLUME, 1.0)
+			_begin_play_round()
+
+## 游玩段结束：累计本段战绩 → 自动调径 → 进休息段或直接结算（无尾休息）。
+func _end_play_round(is_last: bool) -> void:
+	_accumulate_round()
+	_apply_auto_radius()
+	if is_last:
+		_show_settlement(true)
+	else:
+		_begin_rest()
+
+func _begin_rest() -> void:
+	stage = Stage.TIMER_REST
+	_play_sound(_start_beep_audio, START_BEEP_VOLUME, 1.0) # 休息开始与游玩开始共用同一「开始哔」
+	target.despawn()
+	timer_overlay.show_rest(
+		_timer.rest_seconds, _timer.round, _timer.repeat, _round_stats_text(), _radius_log
+	)
+	_refresh_input()
+
+## 把本局数据计入会话累计（CONTEXT「游玩段」）。
+func _accumulate_round() -> void:
+	var stats := IntervalTimer.RoundStats.new()
+	stats.kills = match_state.kills
+	stats.shots = match_state.shots
+	stats.hits = match_state.hits
+	stats.deaths = match_state.deaths
+	stats.seconds = match_state.elapsed
+	_last_round_stats = stats
+	_timer.accumulate(stats)
+
+## 自动调径（CONTEXT「自动调径」）：按本段准确率调整「体型半径」，本段 0 发则跳过。
+## `write_param` 会在选中预设时写回该预设的半径，否则写全局设置。
+func _apply_auto_radius() -> void:
+	if not GameSettings.auto_adjust_radius:
+		return
+	var accuracy := match_state.accuracy()
+	if accuracy < 0.0:
+		return
+	var old_radius := GameSettings.body_radius
+	var fresh := clampf(
+		roundf(AutoRadius.adjust(old_radius, accuracy / 100.0)),
+		Physique.BODY_RADIUS_MIN,
+		Physique.BODY_RADIUS_MAX
+	)
+	if not is_equal_approx(fresh, old_radius):
+		GameSettings.write_param(&"body_radius", fresh)
+		target.apply_body_radius(fresh)
+	# 每段（含末段）都追加一行；只有本段 0 发才跳过（accuracy < 0 已在上方提前返回）
+	_radius_log.append("半径 %d → %d" % [int(old_radius), int(fresh)])
+
+func _round_stats_text() -> String:
+	var stats := _last_round_stats
+	if stats == null:
+		return ""
+	var acc := DuelMatch.accuracy_percent(stats.hits, stats.shots)
+	var accuracy := "—" if acc < 0.0 else "%.1f%%" % acc
+	return (
+		"本轮：击杀 %d　命中 %d/%d　准确率 %s　死亡 %d"
+		% [stats.kills, stats.hits, stats.shots, accuracy, stats.deaths]
+	)
+
+## 结束本局 / 整个计时会话（ESC 等价）：计时会话按**会话累计**结算，普通对局按本局快照结算。
+func _end_session() -> void:
+	if _timer_active:
+		if _timer.phase == IntervalTimer.Phase.PLAY:
+			_accumulate_round()
+			_apply_auto_radius()
+		_timer.cancel()
+	_show_settlement(_timer_active)
+
+func _show_settlement(from_timer: bool) -> void:
+	stage = Stage.SETTLEMENT
+	_timer_active = false
+	target.despawn()
+	timer_overlay.hide_overlay()
+	var lines: Array = []
+	if from_timer:
+		var minutes := int(_timer.total_play_seconds) / 60
+		var seconds := int(_timer.total_play_seconds) % 60
+		lines.append("会话累计准确率：%s" % _accuracy_text(_timer.total_accuracy()))
+		lines.append("击杀：%d　　死亡：%d" % [_timer.total_kills, _timer.total_deaths])
+		lines.append("游玩时长：%02d:%02d" % [minutes, seconds])
+		lines.append_array(_radius_log)
+	else:
+		var snapshot := match_state.settle()
+		var minutes := int(snapshot.elapsed) / 60
+		var seconds := int(snapshot.elapsed) % 60
+		lines.append("准确率：%s" % _accuracy_text(snapshot.accuracy))
+		lines.append("击杀：%d　　死亡：%d" % [snapshot.kills, snapshot.deaths])
+		lines.append("用时：%02d:%02d" % [minutes, seconds])
+	settlement.show_result(lines)
+	_refresh_input()
+
+## 「—」表示无数据；否则一位小数、不带百分号（CONTEXT「结算快照」）。
+func _accuracy_text(value: float) -> String:
+	return "—" if value < 0.0 else "%.1f" % value
 
 # ---- 设置 ----
 
@@ -122,6 +333,24 @@ func _apply_settings() -> void:
 	target.apply_body_radius(GameSettings.body_radius)
 	# 躲避配置与 `Target` 共用同一实例，就地刷新即可实时生效
 	GameSettings.apply_avoidance_config(target.config)
+	_apply_quality()
+
+## 「画面质量」两档映射到后处理开关与阴影精度（CONTEXT「画面质量」；
+## SDFGI / SSIL / 体积雾是性能大户，低档全关）。
+func _apply_quality() -> void:
+	var low := GameSettings.graphics_quality == GameSettings.Quality.LOW
+	var env := world_env.environment
+	env.glow_enabled = not low
+	env.ssao_enabled = not low
+	env.ssil_enabled = false
+	env.sdfgi_enabled = false
+	env.ssr_enabled = false
+	env.volumetric_fog_enabled = false
+	env.adjustment_enabled = true
+	env.adjustment_saturation = 1.0 if low else 1.06
+	sun.shadow_enabled = true
+	sun.directional_shadow_max_distance = 300.0 if low else 800.0
+	RenderingServer.directional_shadow_atlas_set_size(1024 if low else 4096, true)
 
 # ---- 靶：刷新 ----
 
@@ -239,8 +468,11 @@ func _on_shot_fired(id: StringName) -> void:
 			HEADSHOT_VOLUME if headshot else HIT_VOLUME,
 			HEADSHOT_PITCH if headshot else 1.0
 		)
+		if GameSettings.lifesteal_enabled:
+			match_state.heal_player(damage) # 「吸血」：按本次伤害回血，封顶 600
 		if shot_target.take_hit(damage, _perception):
 			match_state.record_kill()
+			match_state.player_hp = DuelMatch.MAX_HP # 击杀回满（与吸血叠加，不溢出）
 			_play_sound(_kill_audio, KILL_VOLUME, 1.0) # 与击中音叠加
 			hud.flash(HitMarkerTiming.KIND_KILL)
 		else:
@@ -260,6 +492,8 @@ func _resolve_bot_shot(hit: bool) -> void:
 	)
 	if not hit:
 		return
+	if GameSettings.lifesteal_enabled:
+		match_state.heal_bot(BotAi.BOT_DAMAGE) # 「吸血」：bot 命中固定回 25
 	match_state.player_hp = maxi(0, match_state.player_hp - BotAi.BOT_DAMAGE)
 	if match_state.player_hp <= 0:
 		_respawn_player()
@@ -296,12 +530,14 @@ func _bot_has_sight() -> bool:
 	var hit := player.get_world_3d().direct_space_state.intersect_ray(query)
 	return hit.is_empty() or hit["collider"] == player
 
-# ---- 音频：三份定频资产入库，音高微差靠播放器 pitch_scale，不预生成变体（票 01 第 9 节）----
+# ---- 音频：定频资产入库，音高微差靠播放器 pitch_scale，不预生成变体（ADR-0012）----
 
 func _build_audio() -> void:
 	_shot_audio = _make_audio("ShotAudio", SHOT_SOUND)
 	_hit_audio = _make_audio("HitAudio", HIT_SOUND)
 	_kill_audio = _make_audio("KillAudio", KILL_SOUND)
+	_pre_beep_audio = _make_audio("PreBeepAudio", PRE_BEEP_SOUND)
+	_start_beep_audio = _make_audio("StartBeepAudio", START_BEEP_SOUND)
 
 func _make_audio(node_name: String, path: String) -> AudioStreamPlayer:
 	var player := AudioStreamPlayer.new()

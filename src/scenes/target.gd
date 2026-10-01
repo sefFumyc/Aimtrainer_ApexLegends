@@ -87,6 +87,12 @@ func take_hit(damage: int, perception: BotAi.Perception) -> bool:
 		_set_hittable(false)
 	return lethal
 
+## 从场上撤下（回主菜单 / 计时准备段用）：不可见、不可命中。
+## AI 状态保留，下一次 `spawn()` 会整体覆盖。
+func despawn() -> void:
+	visible = false
+	_set_hittable(false)
+
 ## 死亡后的刷新倒计时是否已走完（由 main 决定刷到哪）。
 func needs_respawn() -> bool:
 	return not ai.alive and ai.respawn_left <= 0.0
