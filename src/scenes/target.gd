@@ -43,8 +43,8 @@ const HEAD_PART_KEYWORDS: Array[String] = ["head", "helmet"]
 ## bot 改挂步枪（票 05：刀盾违和）。
 const WEAPON_PART_KEYWORDS: Array[String] = ["sword", "shield"]
 
-## bot 手持步枪（票 05）：Kenney blaster-e（与玩家第一人称同款资产）挂到右手骨。
-const WEAPON_MODEL := "res://assets/third_party/kenney_blaster-kit/rifle/blaster-e.glb"
+## bot 手持步枪（票 05，票 06 换 blaster-d 突击步枪造型）：Kenney blaster-kit（与玩家第一人称同款资产）挂到右手骨。
+const WEAPON_MODEL := "res://assets/third_party/kenney_blaster-kit/rifle/blaster-d.glb"
 const WEAPON_BONE := "handslot.r" ## KayKit 骨架预留的右手持物槽位
 const WEAPON_LENGTH := 30.0 ## 步枪的期望长度（骑士总高 72，原剑的伸出量约 40）
 ## 步枪在手骨上的姿态补偿（模型原始朝向 → 枪口朝角色前方、枪身水平）。
@@ -297,6 +297,10 @@ func _attach_weapon(skeleton: Skeleton3D) -> void:
 	var longest := maxf(box.size.x, maxf(box.size.y, box.size.z))
 	if longest <= 0.0:
 		return
+	# 朝向说明（票 06 探针实测）：blaster-d 导入后 +Z 端是枪口，WEAPON_ROT 标定的合成
+	# 结果恰好把模型 +Z 端对到角色前方——**不需要翻转**；且 _sync_gun 每帧覆写 _gun
+	# 的全局变换，任何挂在枪根上的本地翻转都活不过一帧（曾试过包 holder 转 180°，
+	# 被覆写成恒等，已删）。
 	_gun = gun
 	_gun_bone = skeleton.find_bone(WEAPON_BONE)
 	_skeleton = skeleton

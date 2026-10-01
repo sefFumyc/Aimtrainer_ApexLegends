@@ -23,10 +23,12 @@ const ZOOM_FOV := 76.64
 
 ## 纯视觉后坐力（票 05）：开火瞬间相机轻踢上抬再回中，COD/Apex 手感——
 ## **只动渲染**：弹道方向永远取逻辑 yaw/pitch（见 `aim_direction`），后坐力不影响任何命中。
-const RECOIL_PITCH_RIFLE := 0.03 ## 步枪单发上踢（rad，约 1.7°）
-const RECOIL_PITCH_PISTOL := 0.02
-const RECOIL_YAW_JITTER := 0.008 ## 每发随机水平抖动幅度（±rad）
-const RECOIL_RECOVER := 10.0 ## 指数回中速率（1/s）
+const RECOIL_PITCH_RIFLE := 0.018 ## 步枪单发上踢（rad，约 1.0°）；连发累计大，幅度收敛（票 06）
+const RECOIL_PITCH_PISTOL := 0.028 ## 手枪单发上踢（rad，约 1.6°）：单发间隔长，相机踢更大更「沉」
+const RECOIL_YAW_RIFLE := 0.005 ## 每发随机水平抖动幅度（±rad），按武器分档（票 06）
+const RECOIL_YAW_PISTOL := 0.012 ## 手枪水平抖略大：单发大间歇配一个明显的小甩头
+const RECOIL_RECOVER_RIFLE := 10.0 ## 指数回中速率（1/s）：连发要回得快，否则糊成一团
+const RECOIL_RECOVER_PISTOL := 5.0 ## 手枪回中减半：单发要「沉」的手感（CONTEXT「视觉后坐力」）
 
 @onready var camera: Camera3D = $Camera3D
 @onready var viewmodel: Viewmodel = $Viewmodel
@@ -127,16 +129,18 @@ func _tick_move(delta: float) -> void:
 	# 相机 = 逻辑朝向 + 视觉后坐力偏移；后者是纯渲染量，弹道不读它。
 	camera.rotation = Vector3(pitch + _recoil_pitch, yaw + _recoil_yaw, 0.0)
 
-## 视觉后坐力：开火时上踢，指数回中（票 05）。
+## 视觉后坐力：开火时上踢，指数回中（票 05）；回中速率按武器分档（票 06）。
 func _tick_recoil(delta: float) -> void:
-	var k := 1.0 - exp(-RECOIL_RECOVER * delta)
+	var recover := RECOIL_RECOVER_RIFLE if Weapon.is_rifle(weapon) else RECOIL_RECOVER_PISTOL
+	var k := 1.0 - exp(-recover * delta)
 	_recoil_pitch = lerpf(_recoil_pitch, 0.0, k)
 	_recoil_yaw = lerpf(_recoil_yaw, 0.0, k)
 
 func _add_recoil() -> void:
 	var strong := Weapon.is_rifle(weapon)
 	_recoil_pitch += RECOIL_PITCH_RIFLE if strong else RECOIL_PITCH_PISTOL
-	_recoil_yaw += randf_range(-RECOIL_YAW_JITTER, RECOIL_YAW_JITTER)
+	var jitter := RECOIL_YAW_RIFLE if strong else RECOIL_YAW_PISTOL
+	_recoil_yaw += randf_range(-jitter, jitter)
 	viewmodel.kick(strong)
 
 func _read_control() -> MovementSimulator.MoveControl:

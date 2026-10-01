@@ -33,7 +33,7 @@ const RIFLE_LENGTH := 25.0
 const PISTOL_LENGTH := 7.5
 
 ## Kenney Blaster Kit（CC0）模型路径；文件不存在时回落到程序化几何。
-const RIFLE_MODEL := "res://assets/third_party/kenney_blaster-kit/rifle/blaster-e.glb"
+const RIFLE_MODEL := "res://assets/third_party/kenney_blaster-kit/rifle/blaster-d.glb"
 const PISTOL_MODEL := "res://assets/third_party/kenney_blaster-kit/pistol/blaster-k.glb"
 
 const METAL := Color(0.16, 0.17, 0.20)
@@ -41,10 +41,12 @@ const GRIP := Color(0.28, 0.25, 0.22)
 const DOT_COLOR := Color(0.95, 0.22, 0.18)
 
 ## 纯视觉后坐力（票 05）：开火瞬间枪体后坐 + 上抬，弹性回位——只动挂点，与开镜基准叠加。
-const KICK_BACK := 1.8 ## 步枪后坐位移（沿挂点 +Z，朝相机方向）
-const KICK_PITCH := 0.1 ## 步枪上抬角（rad）；手枪按 KICK_PISTOL_RATIO 缩放
-const KICK_PISTOL_RATIO := 0.6 ## 手枪后坐相对步枪的比例
-const KICK_RECOVER := 14.0 ## 指数回位速率（1/s）
+## 票 06 分档：步枪收敛（连发累计大），手枪维持原值（1.8×0.6 / 0.1×0.6）不放大。
+const KICK_BACK_RIFLE := 1.1 ## 步枪后坐位移（沿挂点 +Z，朝相机方向）
+const KICK_PITCH_RIFLE := 0.06 ## 步枪上抬角（rad）
+const KICK_BACK_PISTOL := 1.08 ## 手枪后坐位移（原 1.8 × 0.6，保持不变）
+const KICK_PITCH_PISTOL := 0.06 ## 手枪上抬角（原 0.1 × 0.6，保持不变）
+const KICK_RECOVER := 14.0 ## 指数回位速率（1/s），两枪共用
 
 @onready var weapon_camera: Camera3D = $SubViewport/WeaponCamera
 @onready var rig: Node3D = $SubViewport/WeaponCamera/WeaponRig
@@ -53,8 +55,9 @@ var _rifle: Node3D
 var _pistol: Node3D
 var _weapon: StringName = Weapon.RIFLE
 var _zoom := 0.0
-## 准镜中线在武器挂点本地的高度；GLB 拟合后模型顶面即 y = 0，这里就是 0。
-var _sight_y := PROC_SIGHT_HEIGHT
+## 每把枪的红点镜轴高度（票 06）：两把枪镜高不同，按武器查表——
+## 满开镜时挂点 y = -镜高，红点正落准星轴。程序化兜底枪共用 PROC_SIGHT_HEIGHT。
+var _sight_heights := {}
 ## 开镜基准位姿（`apply_zoom` 算好存在这里，`_apply_rig` 把后坐力叠上去）。
 var _base_pos := Vector3.ZERO
 var _base_rot := Vector3.ZERO
@@ -96,20 +99,21 @@ func set_weapon(id: StringName) -> void:
 		_rifle.visible = Weapon.is_rifle(id)
 	if _pistol != null:
 		_pistol.visible = not Weapon.is_rifle(id)
+	apply_zoom(_zoom) ## 镜高按枪不同（票 06），切枪重算开镜基准
 
 ## 开镜进度 p（0 腰射 / 1 满开镜）。
 ## 俯仰角在满开镜时归零——否则那 −0.06 的枪口下压会把准镜带离准星轴。
 func apply_zoom(p: float) -> void:
 	_zoom = clampf(p, 0.0, 1.0)
-	_base_pos = GUN_BASE_POS.lerp(Vector3(0.0, -_sight_y, ADS_Z), _zoom)
+	var sight: float = _sight_heights.get(_weapon, PROC_SIGHT_HEIGHT)
+	_base_pos = GUN_BASE_POS.lerp(Vector3(0.0, -sight, ADS_Z), _zoom)
 	_base_rot = Vector3(GUN_BASE_PITCH * (1.0 - _zoom), GUN_BASE_YAW * (1.0 - _zoom), 0.0)
 	_apply_rig()
 
-## 开火一瞬的后坐注入（player 调用）：步枪全额，手枪按比例。
+## 开火一瞬的后坐注入（player 调用）：按武器取各自档位（票 06 拆档）。
 func kick(strong: bool) -> void:
-	var power := 1.0 if strong else KICK_PISTOL_RATIO
-	_kick_pos += KICK_BACK * power
-	_kick_pitch += KICK_PITCH * power
+	_kick_pos += KICK_BACK_RIFLE if strong else KICK_BACK_PISTOL
+	_kick_pitch += KICK_PITCH_RIFLE if strong else KICK_PITCH_PISTOL
 
 func _process(delta: float) -> void:
 	var k := 1.0 - exp(-KICK_RECOVER * delta)
@@ -134,15 +138,48 @@ func _build_weapon(node_name: String, id: StringName) -> Node3D:
 	var loaded := _try_load_model(RIFLE_MODEL if rifle else PISTOL_MODEL)
 	if loaded != null:
 		root.add_child(_fit_model(loaded, RIFLE_LENGTH if rifle else PISTOL_LENGTH))
-		_sight_y = 0.0 # 拟合把模型顶面压在 y = 0，准镜轴就是顶面
+		# 1x 红点镜骑在枪顶（票 06）：红点即瞄准基线——返回值按枪记录，满开镜时
+		# `_base_pos.y = -镜高` 让红点正落准星轴，与准星重合、视野无遮挡。
+		_sight_heights[id] = _add_red_dot(root, RIFLE_LENGTH if rifle else PISTOL_LENGTH)
 	else:
 		_build_procedural(root, id)
 	return root
 
-## 把模型摆进武器挂点空间：Kenney 枪模 −Z 端是枪口，与挂点「−Z 朝前」同向，无需翻转（票 05）；
-## 缩放到约定总长、顶面压到 y = 0（准镜轴）、枪托端 → z = 0、枪口端 → z = −length、左右居中。
+## 程序化 1x 红点镜（票 06 定稿样式：无环开框式——两侧细柱 + 顶端红段 + 悬浮红点，
+## 参照 Apex 1x 红点镜：中间完全开放不挡视野；kit 里没有独立瞄具模型）。
+## 返回镜轴相对挂点的高度（模型拟合后顶面在 y = 0，镜轴 = 顶面 + 柱高）。
+func _add_red_dot(root: Node3D, length: float) -> float:
+	var metal := StandardMaterial3D.new()
+	metal.albedo_color = METAL
+	metal.metallic = 0.0 ## 武器世界无反射源，与 GLB 材质统一压全 diffuse（票 06）
+	metal.metallic_specular = 0.3
+	metal.roughness = 0.35
+	var glow := StandardMaterial3D.new()
+	glow.albedo_color = DOT_COLOR
+	glow.emission_enabled = true
+	glow.emission = DOT_COLOR
+	glow.emission_energy_multiplier = 2.5
+
+	var sight_h := length * 0.098 ## 镜轴高度（步 2.45 / 手 0.74）
+	var z := -length * 0.32 ## 骑在机匣上方偏前
+	var half_gap := length * 0.055 ## 柱间距一半（步 ±1.38 / 手 ±0.41）
+	var pole := Vector3(0.16, sight_h * 0.8, 0.22) ## 深色柱身
+	var cap := Vector3(0.16, sight_h * 0.2, 0.22) ## 顶端红段（发光）
+
+	for side in [-1.0, 1.0]:
+		var x: float = side * half_gap
+		var l: String = "L" if side < 0.0 else "R"
+		root.add_child(_box("RedDotPost" + l, pole, Vector3(x, pole.y * 0.5, z), metal))
+		root.add_child(_box("RedDotCap" + l, cap, Vector3(x, pole.y + cap.y * 0.5, z), glow))
+	root.add_child(_sphere("RedDot", length * 0.006, Vector3(0.0, sight_h, z), glow)) ## 红点很小（步 0.15 / 手 0.045），开镜只是个点
+	return sight_h
+
+## 把模型摆进武器挂点空间：Kenney glb 导入后 **+Z 端是枪口**（blaster-d/k 两端端面实测），
+## 先绕 Y 转 180° 让枪口朝 −Z 与挂点同向（票 06 修正拿反）；再缩放到约定总长、
+## 顶面压到 y = 0（准镜轴）、枪托端 → z = 0、枪口端 → z = −length、左右居中。
 ## 全部由模型自身的包围盒算出，不含手填数字。
 func _fit_model(model: Node3D, length: float) -> Node3D:
+	model.rotation.y = PI ## 修正枪口朝向（见上）
 	var box := _model_aabb(model)
 	if box.size.z <= 0.0:
 		return model
@@ -189,7 +226,18 @@ func _try_load_model(path: String) -> Node3D:
 
 ## GLB 自带的图层不一定是我们约定的武器层，逐个改掉；同时关掉投影（票 05：FPS 惯例，
 ## 武器不参与任何阴影计算，也避免独立世界里的自投影杂纹）。
+## 另把材质压成全 diffuse（票 06）：blaster-d 等模型自带金属度，而武器世界（SubViewport）
+## 没有天空/反射探针，金属反射为零会整枪黑掉；玩具枪本就是 diffuse 风格，统一压平。
 func _set_weapon_layers(node: Node) -> void:
+	if node is MeshInstance3D:
+		var mi := node as MeshInstance3D
+		for i in mi.get_surface_override_material_count():
+			var mat := mi.get_active_material(i)
+			if mat is StandardMaterial3D:
+				var sm := (mat as StandardMaterial3D).duplicate()
+				sm.metallic = 0.0
+				sm.metallic_specular = 0.3
+				mi.set_surface_override_material(i, sm)
 	if node is VisualInstance3D:
 		var vi := node as VisualInstance3D
 		vi.layers = WEAPON_LAYER
