@@ -1,11 +1,15 @@
 @echo off
-chcp 65001 >nul
-rem æ¸¸æˆå…¥å£ï¼ˆç¥¨ 05 ç¬¬ 3 é¡¹å…œåº•æ–¹æ¡ˆï¼‰ï¼šä¸å¼€ç¼–è¾‘å™¨ï¼Œç”¨æœ¬æœºå¼•æ“Žçª—å£ç‰ˆç›´æŽ¥è·‘ä¸»åœºæ™¯ã€‚
-rem ç‹¬ç«‹ exe ç­‰å¯¼å‡ºæ¨¡æ¿è£…å¥½åŽæŒ‰ export_presets.cfg å‡ºåŒ…ï¼ˆbuild/ ç›®å½•ï¼‰ã€‚
-rem æƒ³çœ‹å¼•æ“Žæ—¥å¿—å¯æ”¹ç”¨åŒç›®å½•çš„ Godot_v4.7.2-stable_win64_console.exeã€‚
+rem ÓÎÏ·Èë¿Ú£ºË«»÷½øÓÎÏ·¡£ÓÅÏÈÅÜÒÑµ¼³öµÄ¶ÀÁ¢ exe£¬Ã»ÓÐÔÙÓÃ±¾»úÒýÇæ´°¿Ú°æÅÜÖ÷³¡¾°¡£
+rem Ïë¿´ÒýÇæÈÕÖ¾¿É¸ÄÓÃÍ¬Ä¿Â¼µÄ Godot_v4.7.2-stable_win64_console.exe¡£
+rem ×¢Òâ£º±¾ÎÄ¼þ±ØÐë±£´æÎª ANSI£¨GBK£©±àÂë¡ª¡ªcmd °´ GBK ½âÎöÅú´¦Àí£¬UTF-8 ÖÐÎÄ»áÂÒÂë±¨´í¡£
+set EXE=%~dp0build\aim-trainer.exe
+if exist "%EXE%" (
+    start "" "%EXE%"
+    exit /b 0
+)
 set ENGINE=%~dp0..\..\godot\4.7.2-stable\Godot_v4.7.2-stable_win64.exe
 if not exist "%ENGINE%" (
-    echo æ‰¾ä¸åˆ°å¼•æ“Žï¼š%ENGINE%
+    echo ÕÒ²»µ½ÒýÇæ£º%ENGINE%
     pause
     exit /b 1
 )
