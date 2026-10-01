@@ -21,6 +21,13 @@ const ZOOM_OUT_TIME := 0.088
 const FOV := 92.35
 const ZOOM_FOV := 76.64
 
+## 纯视觉后坐力（票 05）：开火瞬间相机轻踢上抬再回中，COD/Apex 手感——
+## **只动渲染**：弹道方向永远取逻辑 yaw/pitch（见 `aim_direction`），后坐力不影响任何命中。
+const RECOIL_PITCH_RIFLE := 0.03 ## 步枪单发上踢（rad，约 1.7°）
+const RECOIL_PITCH_PISTOL := 0.02
+const RECOIL_YAW_JITTER := 0.008 ## 每发随机水平抖动幅度（±rad）
+const RECOIL_RECOVER := 10.0 ## 指数回中速率（1/s）
+
 @onready var camera: Camera3D = $Camera3D
 @onready var viewmodel: Viewmodel = $Viewmodel
 
@@ -34,6 +41,9 @@ var input_enabled := true
 
 var _fire := Weapon.new(Weapon.RIFLE)
 var _pad := -1
+## 视觉后坐力的当前偏移量（渲染专用，不进 yaw/pitch 逻辑状态）。
+var _recoil_pitch := 0.0
+var _recoil_yaw := 0.0
 
 func _ready() -> void:
 	# 主相机不看武器层；武器相机只看武器层（ADR-0008 的几何隔离）。
@@ -51,6 +61,7 @@ func _unhandled_input(event: InputEvent) -> void:
 
 func _physics_process(delta: float) -> void:
 	_refresh_gamepad()
+	_tick_recoil(delta)
 	if input_enabled:
 		_tick_look(delta)
 		_tick_weapon(delta)
@@ -64,10 +75,11 @@ func apply_look(d_yaw: float, d_pitch: float) -> void:
 	yaw += d_yaw
 	pitch = clampf(pitch + d_pitch, -PITCH_LIMIT, PITCH_LIMIT)
 
-## 当前生效的鼠标灵敏度：开镜时按倍率缩放（参考实现 ADR-0021）。
+## 当前生效的鼠标灵敏度：滑条是倍率（票 05 改量纲），乘基准换算成 rad/px；
+## 开镜时再按 ADS 倍率缩放（参考实现 ADR-0021）。
 func _sensitivity() -> float:
 	var mult := 1.0 - (1.0 - GameSettings.ads_sens_mult) * zoom_p
-	return GameSettings.mouse_sensitivity * mult
+	return InputSensitivity.mouse_rad_per_px(GameSettings.mouse_sensitivity) * mult
 
 ## 手柄灵敏度与鼠标分开设定（CONTEXT「灵敏度」），开镜倍率共用。
 func _pad_sensitivity() -> float:
@@ -112,7 +124,20 @@ func _tick_move(delta: float) -> void:
 	global_position.y = 0.0
 	sim.sync_position(Vector2(global_position.x, global_position.z))
 	camera.position = Vector3(0.0, Physique.EYE_HEIGHT + sim.height(), 0.0)
-	camera.rotation = Vector3(pitch, yaw, 0.0)
+	# 相机 = 逻辑朝向 + 视觉后坐力偏移；后者是纯渲染量，弹道不读它。
+	camera.rotation = Vector3(pitch + _recoil_pitch, yaw + _recoil_yaw, 0.0)
+
+## 视觉后坐力：开火时上踢，指数回中（票 05）。
+func _tick_recoil(delta: float) -> void:
+	var k := 1.0 - exp(-RECOIL_RECOVER * delta)
+	_recoil_pitch = lerpf(_recoil_pitch, 0.0, k)
+	_recoil_yaw = lerpf(_recoil_yaw, 0.0, k)
+
+func _add_recoil() -> void:
+	var strong := Weapon.is_rifle(weapon)
+	_recoil_pitch += RECOIL_PITCH_RIFLE if strong else RECOIL_PITCH_PISTOL
+	_recoil_yaw += randf_range(-RECOIL_YAW_JITTER, RECOIL_YAW_JITTER)
+	viewmodel.kick(strong)
 
 func _read_control() -> MovementSimulator.MoveControl:
 	var c := MovementSimulator.MoveControl.new()
@@ -160,8 +185,10 @@ func _tick_weapon(delta: float) -> void:
 	# 返回 false 表示冷却中、已缓冲一发（交给 advance 在冷却结束时补发）。
 	if not Weapon.automatic(weapon) and Input.is_action_just_pressed("fire"):
 		if _fire.press():
+			_add_recoil()
 			shot_fired.emit(weapon)
 	for i in _fire.advance(delta, held):
+		_add_recoil()
 		shot_fired.emit(weapon)
 
 ## 当前武器枪口的世界坐标（火光与曳光弹起点）。
@@ -172,9 +199,10 @@ func muzzle_world() -> Vector3:
 func eye_position() -> Vector3:
 	return camera.global_position
 
-## 准星方向（射线方向）。
+## 当前准星方向（射线方向）：只取**逻辑** yaw/pitch——视觉后坐力只踢渲染相机，
+## 弹道不能跟着抖（票 05「不要产生实际的后座」）。`from_euler` 默认 YXZ 序，与相机一致。
 func aim_direction() -> Vector3:
-	return -camera.global_transform.basis.z
+	return -Basis.from_euler(Vector3(pitch, yaw, 0.0)).z
 
 func _refresh_gamepad() -> void:
 	var pads := Input.get_connected_joypads()

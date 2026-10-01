@@ -583,6 +583,8 @@ func _make_fx(flash_name: String, light_name: String, tracer_name: String) -> Fx
 	out.flash.name = flash_name
 	out.flash.mesh = flash_mesh
 	out.flash.visible = false
+	# 火光是发光体不是实体（票 05）：默认的 cast_shadow=ON 会让它在地面上投出短促光斑影。
+	out.flash.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(out.flash)
 
 	out.light = OmniLight3D.new()
@@ -605,6 +607,8 @@ func _make_fx(flash_name: String, light_name: String, tracer_name: String) -> Fx
 	out.tracer.mesh = tracer_mesh
 	out.tracer.material_override = tracer_mat
 	out.tracer.visible = false
+	# 同火光：曳光弹是发光弹道不是实体，不投影（票 05）。
+	out.tracer.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(out.tracer)
 	return out
 

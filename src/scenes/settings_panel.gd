@@ -14,6 +14,13 @@ const LABEL_WIDTH := 150
 const ADS_MULT_MIN := 0.1 ## 「开镜灵敏度倍率」下限（CONTEXT）
 const ADS_MULT_MAX := 5.0 ## 「开镜灵敏度倍率」上限（CONTEXT）
 
+## 深色高对比主题（票 05 第 6 项）：半透明深面板 + 纯白文字 + 青绿高亮、禁用变灰。
+const PANEL_BG := Color(0.07, 0.08, 0.10, 0.90)
+const FIELD_BG := Color(0.13, 0.15, 0.18, 0.95)
+const TEXT := Color(1.0, 1.0, 1.0)
+const TEXT_DIM := Color(0.45, 0.48, 0.52)
+const ACCENT := Color(0.20, 0.85, 0.70) ## 青绿：选中页签 / 聚焦边框 / 滑条已选段
+
 var _layout: OptionButton
 var _fire_enabled: CheckButton
 var _hit_rate_row: HBoxContainer
@@ -51,6 +58,7 @@ func _build() -> void:
 	panel.set_anchors_preset(Control.PRESET_CENTER)
 	panel.grow_horizontal = Control.GROW_DIRECTION_BOTH
 	panel.grow_vertical = Control.GROW_DIRECTION_BOTH
+	panel.theme = _build_theme()
 	add_child(panel)
 
 	var margin := MarginContainer.new()
@@ -138,15 +146,15 @@ func _build_video_page(page: VBoxContainer) -> void:
 		_row(
 			"鼠标灵敏度",
 			_bound_slider(
-				GameSettings.SENSITIVITY_MIN,
-				GameSettings.SENSITIVITY_MAX,
-				0.0001,
+				InputSensitivity.MOUSE_SENSITIVITY_MIN,
+				InputSensitivity.MOUSE_SENSITIVITY_MAX,
+				0.1,
 				GameSettings.mouse_sensitivity,
 				&"mouse_sensitivity"
 			)
 		)
 	)
-	# 手柄灵敏度是倍率（0.2–5.0），不是鼠标那种 rad/px，滑块区间与步进都不同。
+	# 手柄灵敏度同样是倍率（0.2–5.0，票 05 起鼠标与它同量纲同区间），步进 0.1。
 	page.add_child(
 		_row(
 			"手柄灵敏度",
@@ -261,8 +269,18 @@ func _row(label_text: String, control: Control) -> HBoxContainer:
 	row.add_theme_constant_override("separation", 12)
 	if not label_text.is_empty():
 		row.add_child(_label(label_text))
-	control.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	row.add_child(control)
+	if control is HSlider:
+		# 滑条一律配数值框（票 05 第 2 项）：右侧两位小数常显，也可直接键入。
+		var pair := HBoxContainer.new()
+		pair.add_theme_constant_override("separation", 8)
+		pair.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		control.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		pair.add_child(control)
+		pair.add_child(_value_box(control as HSlider))
+		row.add_child(pair)
+	else:
+		control.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		row.add_child(control)
 	return row
 
 func _slider(min_value: float, max_value: float, step: float, value: float) -> HSlider:
@@ -273,6 +291,101 @@ func _slider(min_value: float, max_value: float, step: float, value: float) -> H
 	s.value = value
 	s.custom_minimum_size.x = 240
 	return s
+
+## 滑条旁的数值框（票 05 第 2 项）：常显两位小数；键入回车或失焦都生效，越界值钳到边界、
+## 非法文本回落滑条当前值。通过 `set_meta` 挂回滑条，`_sync_controls` 据此在切预设后一并刷新文本。
+func _value_box(s: HSlider) -> LineEdit:
+	var edit := LineEdit.new()
+	edit.custom_minimum_size.x = 64
+	edit.alignment = HORIZONTAL_ALIGNMENT_CENTER
+	edit.text = "%.2f" % s.value
+	var apply := func(text: String) -> void:
+		if text.is_valid_float():
+			s.value = clampf(text.to_float(), s.min_value, s.max_value) # 走 value_changed → 既有写回链
+		edit.text = "%.2f" % s.value
+	edit.text_submitted.connect(apply)
+	edit.focus_exited.connect(func() -> void: apply.call(edit.text))
+	s.value_changed.connect(func(v: float) -> void: edit.text = "%.2f" % v)
+	s.set_meta("value_edit", edit)
+	return edit
+
+## 深色高对比主题（票 05 第 6 项）：覆盖面板 / 输入框 / 页签 / 下拉列表 / 滑条的底色与文字色。
+func _build_theme() -> Theme:
+	var t := Theme.new()
+
+	var panel := StyleBoxFlat.new()
+	panel.bg_color = PANEL_BG
+	panel.set_corner_radius_all(10)
+	t.set_stylebox("panel", "PanelContainer", panel)
+
+	# 文字：常规纯白、禁用变灰。
+	for type in ["Label", "CheckButton", "LineEdit", "OptionButton", "Button", "PopupMenu"]:
+		t.set_color("font_color", type, TEXT)
+		t.set_color("font_disabled_color", type, TEXT_DIM)
+	t.set_color("font_placeholder_color", "LineEdit", TEXT_DIM)
+	t.set_color("font_unselected_color", "TabContainer", TEXT_DIM)
+	t.set_color("font_selected_color", "TabContainer", TEXT)
+
+	# 开关激活态（票 05 第 6 项）：选中青绿、未选灰，禁用沿用上面的灰字。
+	t.set_color("icon_normal_color", "CheckButton", TEXT_DIM)
+	t.set_color("icon_pressed_color", "CheckButton", ACCENT)
+
+	# 输入框 / 按钮：深底，聚焦或悬停时描青绿边。
+	var field := StyleBoxFlat.new()
+	field.bg_color = FIELD_BG
+	field.set_corner_radius_all(6)
+	field.set_content_margin_all(6)
+	var field_focus := field.duplicate() as StyleBoxFlat
+	field_focus.set_border_width_all(2)
+	field_focus.border_color = ACCENT
+	for type in ["LineEdit", "OptionButton", "Button"]:
+		t.set_stylebox("normal", type, field)
+		t.set_stylebox("focus", type, field_focus)
+	t.set_stylebox("hover", "OptionButton", field_focus)
+	t.set_stylebox("hover", "Button", field_focus)
+	t.set_stylebox("pressed", "OptionButton", field_focus)
+	t.set_stylebox("pressed", "Button", field_focus)
+
+	# 下拉列表：深底白字，悬停项青绿晕染。
+	var popup := StyleBoxFlat.new()
+	popup.bg_color = Color(0.10, 0.11, 0.14, 0.97)
+	popup.set_corner_radius_all(6)
+	popup.set_content_margin_all(6)
+	t.set_stylebox("panel", "PopupMenu", popup)
+	var item_hover := StyleBoxFlat.new()
+	item_hover.bg_color = Color(ACCENT.r, ACCENT.g, ACCENT.b, 0.18)
+	item_hover.set_corner_radius_all(4)
+	t.set_stylebox("hover", "PopupMenu", item_hover)
+
+	# 页签：选中页白字 + 青绿顶边，未选中灰字。
+	var tab_sel := StyleBoxFlat.new()
+	tab_sel.bg_color = FIELD_BG
+	tab_sel.set_content_margin_all(8)
+	tab_sel.border_width_top = 2
+	tab_sel.border_color = ACCENT
+	t.set_stylebox("tab_selected", "TabContainer", tab_sel)
+	var tab_un := tab_sel.duplicate() as StyleBoxFlat
+	tab_un.border_width_top = 0
+	tab_un.bg_color = Color(0.10, 0.11, 0.13)
+	t.set_stylebox("tab_unselected", "TabContainer", tab_un)
+	var tab_panel := StyleBoxFlat.new()
+	tab_panel.bg_color = Color(0.10, 0.11, 0.13, 0.92)
+	tab_panel.set_content_margin_all(10)
+	t.set_stylebox("panel", "TabContainer", tab_panel)
+
+	# 滑条：深灰轨道 + 青绿已选段（抓握钮沿用默认白圈图标，深底上够醒目）。
+	var track := StyleBoxFlat.new()
+	track.bg_color = Color(0.30, 0.32, 0.36)
+	track.content_margin_top = 3
+	track.content_margin_bottom = 3
+	track.set_corner_radius_all(3)
+	t.set_stylebox("slider", "HSlider", track)
+	var filled := StyleBoxFlat.new()
+	filled.bg_color = ACCENT
+	filled.set_corner_radius_all(3)
+	t.set_stylebox("grabber_area", "HSlider", filled)
+	t.set_stylebox("grabber_area_highlight", "HSlider", filled)
+	return t
 
 func _check(on: bool) -> CheckButton:
 	var c := CheckButton.new()
@@ -292,7 +405,9 @@ func _sync_controls() -> void:
 		var control: Control = _controls[prop]
 		var value: Variant = GameSettings.get(prop)
 		if control is HSlider:
-			(control as HSlider).set_value_no_signal(float(value))
+			var s := control as HSlider
+			s.set_value_no_signal(float(value))
+			(s.get_meta("value_edit") as LineEdit).text = "%.2f" % float(value)
 		elif control is CheckButton:
 			(control as CheckButton).set_value_no_signal(bool(value))
 	_layout.selected = GameSettings.arena_layout

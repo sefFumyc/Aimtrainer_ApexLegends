@@ -7,7 +7,8 @@
 ## ❗ **移动碰撞体**与**命中体**是两件事（ADR-0014）：
 ## - 移动 = 半径 8、高 72 的胶囊（与 Player 同构），只挡遮挡物与地面，任何射线都看不见它；
 ## - 命中 = 模型各部件自身的几何：把每个网格在「靶」局部空间里的包围盒做成盒子碰撞形状，
-##   逐个挂在子 `StaticBody3D` 上，所见即所中——打中盾牌、手臂、腿都算命中，打空气不算。
+##   逐个挂在子 `StaticBody3D` 上，所见即所中——打中手臂、腿都算命中，打空气不算
+##   （Knight 内置的剑/盾网格已隐藏且不再生成命中盒，bot 改持步枪，票 05）。
 ##
 ## 之所以分开：KayKit 骑士是 T 字绑定姿势，剑与盾横向伸出约 40 单位；若让部件盒同时充当移动碰撞体，
 ## 靶会在多遮挡布局下被柱角剐住——纯逻辑满速而 `move_and_slide()` 位移归零，原地卡死。
@@ -37,6 +38,18 @@ const MODEL_FACE_YAW := PI
 
 ## 判为「头」的部件名关键词（小写包含匹配）。
 const HEAD_PART_KEYWORDS: Array[String] = ["head", "helmet"]
+
+## 判为「武器」的部件名关键词（小写包含匹配）：Knight 内置的剑/盾网格隐藏、命中盒一并移除，
+## bot 改挂步枪（票 05：刀盾违和）。
+const WEAPON_PART_KEYWORDS: Array[String] = ["sword", "shield"]
+
+## bot 手持步枪（票 05）：Kenney blaster-e（与玩家第一人称同款资产）挂到右手骨。
+const WEAPON_MODEL := "res://assets/third_party/kenney_blaster-kit/rifle/blaster-e.glb"
+const WEAPON_BONE := "handslot.r" ## KayKit 骨架预留的右手持物槽位
+const WEAPON_LENGTH := 30.0 ## 步枪的期望长度（骑士总高 72，原剑的伸出量约 40）
+## 步枪在手骨上的姿态补偿（模型原始朝向 → 枪口朝角色前方、枪身水平）。
+## 相对 handslot.r 的**绑定 rest 姿态**反解得出（探针两轮均值，票 05）；枪随走动动画自然摆手。
+const WEAPON_ROT := Vector3(deg_to_rad(61.0), deg_to_rad(-147.5), deg_to_rad(-148.3))
 
 ## 走动动作（票 04）：按 `PoseBlend` 判出的姿势选一支。
 ## 靶的主体运动就是横移，所以侧走用 KayKit 的横移跑；直走按前后分量分正走 / 倒走。
@@ -70,6 +83,11 @@ var _model: Node3D
 var _anim: AnimationPlayer
 ## 骨级侧偏：在动画**之后**写 hips / chest（为什么不是 `SkeletonModifier3D`，见 `pose_lean.gd` 头注）。
 var _pose_lean: PoseLean
+## bot 手持步枪（票 05）：挂在 Target 根下，每帧手动对齐右手骨（见 `_attach_weapon`）。
+var _gun: Node3D
+var _gun_bone := -1 ## 枪对齐的手骨索引
+var _gun_len_scale := 1.0 ## 枪的世界级缩放（最长边归一到 WEAPON_LENGTH）
+var _skeleton: Skeleton3D ## Knight 骨架（_attach_weapon 缓存，_sync_gun 每帧读手骨用）
 ## 姿势混合（纯逻辑）：读实际速度，产出姿势 / 侧偏 / 步频。
 var _pose := PoseBlend.new()
 ## 当前在播的动作名（只在切换时调 `play`，避免每帧重启动画）。
@@ -215,6 +233,16 @@ func _apply_pose(delta: float) -> void:
 		_anim.advance(delta)
 	if _pose_lean != null:
 		_pose_lean.apply(frame.lean)
+	_sync_gun() # 手动同步枪到右手骨（为什么不用 BoneAttachment3D，见 _attach_weapon）
+
+## 把枪的世界变换对齐到右手骨**当前位置 + 纯旋转**（丢弃骨链缩放），缩放直接用世界级标量。
+func _sync_gun() -> void:
+	if _gun == null or _gun_bone < 0 or _skeleton == null:
+		return
+	var bone_xf := _skeleton.global_transform * _skeleton.get_bone_global_pose(_gun_bone)
+	var basis := Basis(bone_xf.basis.get_rotation_quaternion()) * Basis.from_euler(WEAPON_ROT)
+	_gun.global_transform = Transform3D(
+		basis * Basis.from_scale(Vector3.ONE * _gun_len_scale), bone_xf.origin)
 
 ## 姿势 → 动作名。直立按前后分量分正走 / 倒走（侧走本就是横移跑，不分正反）。
 func _clip_for(motion: PoseBlend.Motion, fwd: float) -> String:
@@ -246,10 +274,35 @@ func _setup_animation() -> void:
 			clip_anim.loop_mode = Animation.LOOP_LINEAR
 	_pose_lean = PoseLean.new()
 	_pose_lean.setup(skeleton)
+	_attach_weapon(skeleton)
 	# 动画改由 `_apply_pose` 手动推进（MANUAL）：只有这样才能保证侧偏写骨落在动画之后。
 	_anim.callback_mode_process = AnimationMixer.ANIMATION_CALLBACK_MODE_PROCESS_MANUAL
 	_anim.play(CLIP_IDLE)
 	_clip = CLIP_IDLE
+
+## 把步枪挂到右手骨（票 05）：**不用 BoneAttachment3D**——Knight.glb 的骨链自带非均匀缩放
+## （handslot.r 全局 scale ≈ 29/26/26），BoneAttachment 会把这份剪切传给枪：枪挂上去被
+## 撕成几块看不见的碎片（本票排查实锤）。改为枪挂在 Target 根下（父链均匀缩放），
+## 每帧由 `_sync_gun` 把世界变换对齐到手骨的位置 + 纯旋转，缩放直接用世界级标量。
+func _attach_weapon(skeleton: Skeleton3D) -> void:
+	if not ResourceLoader.exists(WEAPON_MODEL):
+		return
+	var packed := load(WEAPON_MODEL)
+	if not (packed is PackedScene):
+		return
+	var gun := (packed as PackedScene).instantiate() as Node3D
+	if gun == null:
+		return
+	var box := _model_aabb(gun)
+	var longest := maxf(box.size.x, maxf(box.size.y, box.size.z))
+	if longest <= 0.0:
+		return
+	_gun = gun
+	_gun_bone = skeleton.find_bone(WEAPON_BONE)
+	_skeleton = skeleton
+	# 枪直接挂 Target 根下：全局变换由 _sync_gun 每帧写，绕开骨链的非均匀缩放
+	add_child(gun)
+	_gun_len_scale = WEAPON_LENGTH / longest # 世界级缩放：最长边归一到期望长度
 
 ## 脚底接触暗影：程序化径向渐变（中心黑半透明 → 边缘全透明）贴在地面上一层。
 ## 不参与碰撞、不投影、不被射线看见；作为本节点的子节点，随「体型半径」的水平缩放一起变大。
@@ -353,12 +406,22 @@ func _instantiate_model() -> Node3D:
 	return (packed as PackedScene).instantiate() as Node3D
 
 ## 递归遍历模型，把每个网格在「靶」局部空间里的包围盒做成一个盒子碰撞形状。
+## 名字含武器关键词的网格（Knight 内置剑/盾）跳过且隐藏——bot 改持步枪（票 05）。
 func _add_part_shapes(node: Node, xf: Transform3D, holder_xf: Transform3D) -> void:
 	var local := xf
 	if node is Node3D:
 		local = xf * (node as Node3D).transform
 	if node is MeshInstance3D:
-		_add_box_shape(str(node.name), holder_xf * local * (node as MeshInstance3D).get_aabb())
+		var lower := str(node.name).to_lower()
+		var is_weapon := false
+		for keyword in WEAPON_PART_KEYWORDS:
+			if lower.contains(keyword):
+				is_weapon = true
+				break
+		if is_weapon:
+			(node as MeshInstance3D).visible = false
+		else:
+			_add_box_shape(str(node.name), holder_xf * local * (node as MeshInstance3D).get_aabb())
 	for child in node.get_children():
 		_add_part_shapes(child, local, holder_xf)
 
