@@ -146,13 +146,14 @@ func _build_video_page(page: VBoxContainer) -> void:
 			)
 		)
 	)
+	# 手柄灵敏度是倍率（0.2–5.0），不是鼠标那种 rad/px，滑块区间与步进都不同。
 	page.add_child(
 		_row(
 			"手柄灵敏度",
 			_bound_slider(
-				GameSettings.SENSITIVITY_MIN,
-				GameSettings.SENSITIVITY_MAX,
-				0.0001,
+				GameSettings.GAMEPAD_SENSITIVITY_MIN,
+				GameSettings.GAMEPAD_SENSITIVITY_MAX,
+				0.1,
 				GameSettings.gamepad_sensitivity,
 				&"gamepad_sensitivity"
 			)

@@ -14,6 +14,7 @@ signal shot_fired(id: StringName)
 signal weapon_changed(id: StringName)
 
 const PITCH_LIMIT := 1.55
+## 右摇杆满推时的角速度基准（rad/s），乘以「手柄灵敏度」倍率（`GameSettings.gamepad_sensitivity`）。
 const GAMEPAD_LOOK_BASE := 2.5
 const ZOOM_IN_TIME := 0.22
 const ZOOM_OUT_TIME := 0.088

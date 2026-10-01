@@ -15,8 +15,14 @@ enum BotMovement { RANGE, WANDER }
 ## 「画面质量」两档（CONTEXT「画面质量」）：低 = 直渲 + 调色 + 低分辨率阴影；中 = 全套后处理。
 enum Quality { LOW, MEDIUM }
 
-const SENSITIVITY_MIN := 0.0005 ## 灵敏度边界（与 settings_panel 的滑块一致）
+const SENSITIVITY_MIN := 0.0005 ## 鼠标灵敏度边界（rad/px，与 settings_panel 的滑块一致）
 const SENSITIVITY_MAX := 0.006
+## 手柄灵敏度边界（无量纲倍率，乘在 `Player.GAMEPAD_LOOK_BASE` 上）——与鼠标不是同一量纲：
+## 鼠标是「每像素转多少弧度」，手柄是「满推时每秒多少弧度 = 基准 2.5 × 本倍率」。
+## 区间与默认值沿用参考实现 settings.ts 的 SENSITIVITY_MIN/MAX/DEFAULT。
+const GAMEPAD_SENSITIVITY_MIN := 0.2
+const GAMEPAD_SENSITIVITY_MAX := 5.0
+const GAMEPAD_SENSITIVITY_DEFAULT := 1.0
 
 ## 三档「模式权重」的取值边界（「模式权重」要求 0–1、步进 0.05）。
 const WEIGHT_MIN := 0.0
@@ -32,8 +38,8 @@ const DODGE_MIN_TIME_MAX := 1.0
 
 ## 鼠标灵敏度（1 度 ≈ 多少 rad；与参考实现同一量纲）。
 var mouse_sensitivity := 0.0022
-## 手柄灵敏度（右摇杆 → 角速度的乘数，量纲同上，与鼠标分开设定）。
-var gamepad_sensitivity := 0.0022
+## 手柄灵敏度（右摇杆 → 角速度的无量纲倍率，默认 1.0 ⇒ 满推 2.5 rad/s，与鼠标分开设定）。
+var gamepad_sensitivity := GAMEPAD_SENSITIVITY_DEFAULT
 ## 开镜灵敏度倍率（沿用参考实现 ADR-0021 的内置默认值）。
 var ads_sens_mult := 0.751654
 ## 开关项。
@@ -101,10 +107,15 @@ func load_settings() -> void:
 	mouse_sensitivity = clampf(
 		cfg.get_value("input", "mouse_sensitivity", mouse_sensitivity), SENSITIVITY_MIN, SENSITIVITY_MAX
 	)
+	# 手柄灵敏度是「对基准的无量纲倍率」（0.2–5.0）。早期版本误把它按鼠标那种 rad/px 量纲
+	# 存成 ~0.0022，那种落在合法区间之外的历史值一律丢弃、回落默认，否则修好之后手感依旧是死的。
+	var stored_pad: float = cfg.get_value(
+		"input", "gamepad_sensitivity", GAMEPAD_SENSITIVITY_DEFAULT
+	)
 	gamepad_sensitivity = clampf(
-		cfg.get_value("input", "gamepad_sensitivity", gamepad_sensitivity),
-		SENSITIVITY_MIN,
-		SENSITIVITY_MAX
+		stored_pad if stored_pad >= GAMEPAD_SENSITIVITY_MIN else GAMEPAD_SENSITIVITY_DEFAULT,
+		GAMEPAD_SENSITIVITY_MIN,
+		GAMEPAD_SENSITIVITY_MAX
 	)
 	ads_sens_mult = cfg.get_value("input", "ads_sens_mult", ads_sens_mult)
 	graphics_quality = cfg.get_value("video", "quality", graphics_quality) as Quality

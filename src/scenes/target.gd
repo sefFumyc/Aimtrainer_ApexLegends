@@ -38,6 +38,23 @@ const MODEL_FACE_YAW := PI
 ## 判为「头」的部件名关键词（小写包含匹配）。
 const HEAD_PART_KEYWORDS: Array[String] = ["head", "helmet"]
 
+## 走动动作（票 04）：按 `PoseBlend` 判出的姿势选一支。
+## 靶的主体运动就是横移，所以侧走用 KayKit 的横移跑；直走按前后分量分正走 / 倒走。
+const CLIP_IDLE := "Idle"
+const CLIP_LEFT := "Running_Strafe_Left"
+const CLIP_RIGHT := "Running_Strafe_Right"
+const CLIP_FORWARD := "Walking_A"
+const CLIP_BACKWARD := "Walking_Backwards"
+## 本票会播的全部动作：KayKit 的 GLB 里它们是按「不循环」导入的，`_setup_animation` 要逐个改成循环。
+const CLIPS: Array[String] = [
+	CLIP_IDLE, CLIP_LEFT, CLIP_RIGHT, CLIP_FORWARD, CLIP_BACKWARD
+]
+
+## 脚底接触暗影（票 04）：程序化径向渐变贴在脚下一层，随靶移动，不参与任何碰撞与射线。
+const SHADOW_TEXTURE_SIZE := 128
+const SHADOW_LIFT := 0.6 ## 离地高度（避免与地面共面产生 z-fighting）
+const SHADOW_ALPHA := 0.55
+
 var ai: BotAi
 ## 躲避与移动配置：与 `BotAi` 共用同一实例，设置改动就地生效（见 `main._apply_settings`）。
 var config: AvoidanceController.Config
@@ -47,6 +64,16 @@ var _rng := RandomNumberGenerator.new()
 var _hit_body: StaticBody3D
 ## 命中体的全部命中形状（模型部件盒，或模型缺失时的兜底形状）。
 var _hit_shapes: Array[CollisionShape3D] = []
+## 模型实例（GLB 根）；模型缺失时为 null。走动动作与骨骼都在它里面。
+var _model: Node3D
+## 模型自带的动画播放器（`Idle` / `Walking_*` / `Running_Strafe_*` 等）。
+var _anim: AnimationPlayer
+## 骨级侧偏：在动画**之后**写 hips / chest（为什么不是 `SkeletonModifier3D`，见 `pose_lean.gd` 头注）。
+var _pose_lean: PoseLean
+## 姿势混合（纯逻辑）：读实际速度，产出姿势 / 侧偏 / 步频。
+var _pose := PoseBlend.new()
+## 当前在播的动作名（只在切换时调 `play`，避免每帧重启动画）。
+var _clip := ""
 
 func _ready() -> void:
 	visible = false
@@ -55,6 +82,8 @@ func _ready() -> void:
 	ai = BotAi.new(_rng, config, _probe_ray)
 	_build_move_body()
 	_build_hit_body()
+	_build_contact_shadow()
+	_setup_animation()
 	_set_hittable(false)
 
 # ---- 对外接口 ----
@@ -63,6 +92,9 @@ func _ready() -> void:
 func spawn(at: Vector2) -> void:
 	ai.spawn(at)
 	global_position = Vector3(at.x, 0.0, at.y)
+	_pose.reset()
+	if _pose_lean != null:
+		_pose_lean.apply(0.0)
 	visible = true
 	_set_hittable(true)
 
@@ -73,6 +105,7 @@ func tick(delta: float, perception: BotAi.Perception) -> Array:
 	var shots := ai.update(delta, perception)
 	if ai.alive:
 		_apply_motion(delta, before, perception)
+		_apply_pose(delta)
 	visible = ai.alive
 	_set_hittable(ai.alive)
 	return shots
@@ -163,6 +196,108 @@ func _probe_ray(origin: Vector2, dir: Vector2, length: float) -> bool:
 	query.exclude = [get_rid()]
 	return not get_world_3d().direct_space_state.intersect_ray(query).is_empty()
 
+# ---- 动画与特效（票 04）----
+
+## 用**实际水平速度**驱动表现：选动作 / 调播放速率 / 写骨级侧偏。
+## 只读 `ai.sim`，不写回任何位移，也不认识任何开关——所以动画与特效都不可能挪动靶子（验收 7）。
+func _apply_pose(delta: float) -> void:
+	var v := ai.sim.velocity()
+	var local := MovementSimulator.world_to_local(v.x, v.y, ai.sim.get_facing())
+	var frame := _pose.update(delta, ai.sim.speed(), local.x, local.y)
+	if _anim != null:
+		var clip := _clip_for(frame.motion, local.y)
+		if clip != _clip:
+			_clip = clip
+			_anim.play(clip, frame.blend) # 过渡时长就取姿势混合的 250/200/250ms
+		# 步频跟随速度：静止动作不缩放，走动动作按归一化速率调速，与当前速率**等比例**（CONTEXT「步态周期」）。
+		_anim.speed_scale = 1.0 if clip == CLIP_IDLE else frame.gait
+		# 动画走 MANUAL：由这里推进，好让紧接着的侧偏写骨确定地落在动画**之后**（见 pose_lean.gd 头注）。
+		_anim.advance(delta)
+	if _pose_lean != null:
+		_pose_lean.apply(frame.lean)
+
+## 姿势 → 动作名。直立按前后分量分正走 / 倒走（侧走本就是横移跑，不分正反）。
+func _clip_for(motion: PoseBlend.Motion, fwd: float) -> String:
+	match motion:
+		PoseBlend.Motion.LEFT:
+			return CLIP_LEFT
+		PoseBlend.Motion.RIGHT:
+			return CLIP_RIGHT
+		PoseBlend.Motion.STRAIGHT:
+			return CLIP_FORWARD if fwd >= 0.0 else CLIP_BACKWARD
+		_:
+			return CLIP_IDLE
+
+## 认领模型里的动画与骨骼，挂上侧偏叠加器，并先播好「静止」——
+## Knight 是 T 字绑定姿势，不播任何动作时双臂会一直横伸。
+func _setup_animation() -> void:
+	if _model == null:
+		return
+	_anim = _find_animation(_model)
+	var skeleton := _find_skeleton(_model)
+	if _anim == null or skeleton == null:
+		return
+	# ❗ KayKit 的动作在 GLB 里按「不循环」导入（实测 `loop_mode == LOOP_NONE`）：不改的话
+	# 走一步（约 1.07s）就定格在最后一帧、腿不再迈，看起来恰好就是验收 1 要排除的「原地滑步」。
+	# 本票播的这几支都该循环，就地改（运行时改，不动资产的导入设置）。
+	for name in CLIPS:
+		var clip_anim := _anim.get_animation(name)
+		if clip_anim != null:
+			clip_anim.loop_mode = Animation.LOOP_LINEAR
+	_pose_lean = PoseLean.new()
+	_pose_lean.setup(skeleton)
+	# 动画改由 `_apply_pose` 手动推进（MANUAL）：只有这样才能保证侧偏写骨落在动画之后。
+	_anim.callback_mode_process = AnimationMixer.ANIMATION_CALLBACK_MODE_PROCESS_MANUAL
+	_anim.play(CLIP_IDLE)
+	_clip = CLIP_IDLE
+
+## 脚底接触暗影：程序化径向渐变（中心黑半透明 → 边缘全透明）贴在地面上一层。
+## 不参与碰撞、不投影、不被射线看见；作为本节点的子节点，随「体型半径」的水平缩放一起变大。
+func _build_contact_shadow() -> void:
+	var grad := Gradient.new()
+	grad.set_color(0, Color(0.0, 0.0, 0.0, SHADOW_ALPHA))
+	grad.set_color(1, Color(0.0, 0.0, 0.0, 0.0))
+	var tex := GradientTexture2D.new()
+	tex.gradient = grad
+	tex.fill = GradientTexture2D.FILL_RADIAL
+	tex.fill_from = Vector2(0.5, 0.5)
+	tex.fill_to = Vector2(1.0, 0.5)
+	tex.width = SHADOW_TEXTURE_SIZE
+	tex.height = SHADOW_TEXTURE_SIZE
+	var mat := StandardMaterial3D.new()
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.albedo_texture = tex
+	var quad := PlaneMesh.new()
+	var side := Physique.BODY_RADIUS * 4.0
+	quad.size = Vector2(side, side)
+	var shadow := MeshInstance3D.new()
+	shadow.name = "ContactShadow"
+	shadow.mesh = quad
+	shadow.material_override = mat
+	shadow.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	shadow.position = Vector3(0.0, SHADOW_LIFT, 0.0)
+	add_child(shadow)
+
+## GLB 导出的节点名不保证，所以按**类型**而不是按名字在模型子树里找。
+func _find_animation(root: Node) -> AnimationPlayer:
+	if root is AnimationPlayer:
+		return root as AnimationPlayer
+	for child in root.get_children():
+		var found := _find_animation(child)
+		if found != null:
+			return found
+	return null
+
+func _find_skeleton(root: Node) -> Skeleton3D:
+	if root is Skeleton3D:
+		return root as Skeleton3D
+	for child in root.get_children():
+		var found := _find_skeleton(child)
+		if found != null:
+			return found
+	return null
+
 # ---- 碰撞载体 ----
 
 ## 移动碰撞体：半径 8、高 72 的胶囊（与 `player.tscn` 同一形状），只与「世界层」碰撞。
@@ -194,6 +329,8 @@ func _build_hit_body() -> void:
 		inst.queue_free()
 		_build_fallback_shapes()
 		return
+	# 动画与骨骼都在这个实例里（`_setup_animation` 认领），模型缺失时它保持为 null。
+	_model = inst
 	# 模型按「总高 72」缩放并落地对齐（可尺寸之外的位置与朝向都由这个 holder 承担）。
 	# ❗ 水平方向**不**做居中：KayKit 骑士把剑与盾向一侧伸出（AABB 单边到 2.0、另一边只到 -0.6），
 	# 按 AABB 居中会把角色整体推离逻辑原点约 20 单位——准星与骑士错位、移动碰撞体也贴着空气。
