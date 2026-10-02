@@ -128,6 +128,7 @@ func _physics_process(delta: float) -> void:
 func _process(delta: float) -> void:
 	if stage == Stage.PLAY:
 		match_state.elapsed += delta
+	hud.set_zoom(player.zoom_p) # 准星淡出随开镜进度（票 07）
 	if _timer_active:
 		_drive_timer(minf(delta, TIMER_DT_CLAMP))
 	_tick_fx(_fx, delta)

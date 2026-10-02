@@ -30,6 +30,15 @@ const RECOIL_YAW_PISTOL := 0.012 ## 手枪水平抖略大：单发大间歇配�
 const RECOIL_RECOVER_RIFLE := 10.0 ## 指数回中速率（1/s）：连发要回得快，否则糊成一团
 const RECOIL_RECOVER_PISTOL := 5.0 ## 手枪回中减半：单发要「沉」的手感（CONTEXT「视觉后坐力」）
 
+## 滑铲镜头动态（票 07，CONTEXT「滑铲镜头动态」）：纯渲染——侧倾跟随滑铲速度的
+## 视线左右分量、FOV 在开镜缩放之上微扩；幅度统一乘 (1 − zoom_p)，满开镜收敛到 0。
+## 弹道不读这些值（`aim_direction` 只取逻辑朝向），movement.gd 的实测数值不碰。
+const SLIDE_ROLL_MAX := 0.061 ## 满侧倾（rad，约 3.5°）：横铲明显、直铲几乎不倾
+const SLIDE_ROLL_SPEED_REF := MovementSimulator.SPRINT_SPEED ## 侧倾满幅参考速度（引用疾跑实测值，不复制）：超过按满幅钳制
+const SLIDE_ROLL_RATE := 6.0 ## 侧倾指数缓入缓出速率（1/s）
+const SLIDE_FOV_ADD := 4.0 ## 滑铲 FOV 微扩（度，叠加在开镜缩放结果之上）
+const SLIDE_FOV_RATE := 7.0 ## FOV 微扩指数缓入缓出速率（1/s）
+
 @onready var camera: Camera3D = $Camera3D
 @onready var viewmodel: Viewmodel = $Viewmodel
 
@@ -46,6 +55,9 @@ var _pad := -1
 ## 视觉后坐力的当前偏移量（渲染专用，不进 yaw/pitch 逻辑状态）。
 var _recoil_pitch := 0.0
 var _recoil_yaw := 0.0
+## 滑铲镜头动态的当前偏移量（渲染专用，票 07）。
+var _slide_roll := 0.0
+var _slide_fov := 0.0
 
 func _ready() -> void:
 	# 主相机不看武器层；武器相机只看武器层（ADR-0008 的几何隔离）。
@@ -67,6 +79,7 @@ func _physics_process(delta: float) -> void:
 	if input_enabled:
 		_tick_look(delta)
 		_tick_weapon(delta)
+	_tick_slide_cam(delta)
 	_tick_zoom(delta)
 	_tick_move(delta)
 
@@ -104,9 +117,27 @@ func _tick_zoom(delta: float) -> void:
 		want = 1.0
 	var rate := 1.0 / (ZOOM_IN_TIME if want > zoom_p else ZOOM_OUT_TIME)
 	zoom_p = move_toward(zoom_p, want, rate * delta)
-	camera.fov = lerpf(FOV, ZOOM_FOV, zoom_p)
+	# 滑铲 FOV 微扩叠加在开镜缩放结果之上（票 07）；_slide_fov 已含 (1 − zoom_p) 收敛。
+	camera.fov = lerpf(FOV, ZOOM_FOV, zoom_p) + _slide_fov
 	sim.set_zoom(zoom_p)
 	viewmodel.apply_zoom(zoom_p)
+
+# ---- 滑铲镜头动态 ----
+
+## 侧倾跟随滑铲速度的视线左右分量（直铲几乎不倾、横铲明显侧倾），FOV 同步微扩；
+## 都指数缓入缓出、幅度乘 (1 − zoom_p)（满开镜归零）。纯渲染，弹道不读（票 07）。
+func _tick_slide_cam(delta: float) -> void:
+	var roll_goal := 0.0
+	var fov_goal := 0.0
+	if sim.state() == "sliding":
+		var v := sim.velocity()
+		# 视线「右方向」的世界分量（相机本地 +X）：(cos yaw, −sin yaw)。
+		var lateral := v.x * cos(yaw) - v.y * sin(yaw)
+		roll_goal = -SLIDE_ROLL_MAX * clampf(lateral / SLIDE_ROLL_SPEED_REF, -1.0, 1.0)
+		fov_goal = SLIDE_FOV_ADD
+	var damp := 1.0 - zoom_p
+	_slide_roll = lerpf(_slide_roll, roll_goal * damp, 1.0 - exp(-SLIDE_ROLL_RATE * delta))
+	_slide_fov = lerpf(_slide_fov, fov_goal * damp, 1.0 - exp(-SLIDE_FOV_RATE * delta))
 
 # ---- 移动 ----
 
@@ -126,8 +157,8 @@ func _tick_move(delta: float) -> void:
 	global_position.y = 0.0
 	sim.sync_position(Vector2(global_position.x, global_position.z))
 	camera.position = Vector3(0.0, Physique.EYE_HEIGHT + sim.height(), 0.0)
-	# 相机 = 逻辑朝向 + 视觉后坐力偏移；后者是纯渲染量，弹道不读它。
-	camera.rotation = Vector3(pitch + _recoil_pitch, yaw + _recoil_yaw, 0.0)
+	# 相机 = 逻辑朝向 + 视觉后坐力偏移 + 滑铲侧倾；后两者是纯渲染量，弹道不读。
+	camera.rotation = Vector3(pitch + _recoil_pitch, yaw + _recoil_yaw, _slide_roll)
 
 ## 视觉后坐力：开火时上踢，指数回中（票 05）；回中速率按武器分档（票 06）。
 func _tick_recoil(delta: float) -> void:

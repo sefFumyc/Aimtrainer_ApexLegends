@@ -25,6 +25,7 @@ const KILL_COLOR := Color(0.96, 0.16, 0.16, 1.0) ## 击杀：红 X
 
 var _marker := HitMarkerTiming.new()
 var _match: DuelMatch = null
+var _zoom := 0.0 ## 开镜进度（票 07）：白准星透明度 = 1 − 进度，随开关镜平滑淡出/渐回
 
 func _ready() -> void:
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -33,6 +34,10 @@ func _ready() -> void:
 ## 绑定对局数据源；HUD 每帧从它取数，自己不存副本。
 func bind(match_state: DuelMatch) -> void:
 	_match = match_state
+
+## 喂开镜进度（main 每帧传 `player.zoom_p`），准星淡出与开镜动画同频（CONTEXT「准星」）。
+func set_zoom(p: float) -> void:
+	_zoom = clampf(p, 0.0, 1.0)
 
 ## 命中 / 击杀事件（受「命中提示」开关控制）。
 func flash(kind: StringName) -> void:
@@ -49,7 +54,11 @@ func _draw() -> void:
 	_draw_text()
 
 func _draw_crosshair() -> void:
-	draw_circle(size * 0.5, CROSSHAIR_RADIUS, CROSSHAIR_COLOR)
+	# 淡出只作用于白准星（票 07）：让位给红点镜；命中 X 与数字不受影响。
+	var alpha := (1.0 - _zoom) * CROSSHAIR_COLOR.a
+	if alpha <= 0.004:
+		return
+	draw_circle(size * 0.5, CROSSHAIR_RADIUS, Color(CROSSHAIR_COLOR.r, CROSSHAIR_COLOR.g, CROSSHAIR_COLOR.b, alpha))
 
 func _draw_marker() -> void:
 	if _marker.is_idle():

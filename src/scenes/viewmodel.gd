@@ -122,9 +122,12 @@ func _process(delta: float) -> void:
 	_apply_rig()
 
 ## 挂点位姿 = 开镜基准 + 后坐偏移（后坐沿 +Z 朝相机、上抬绕 X）。
+## 枪体 kick 按 (1 − zoom_p) 衰减（票 07）：开镜时枪举在中心、红点要贴准星轴，
+## 枪模上下跳会把红点弹离轴心——Apex 的开镜后坐感由相机踢承担，枪模几乎不动。
 func _apply_rig() -> void:
-	rig.position = _base_pos + Vector3(0.0, 0.0, _kick_pos)
-	rig.rotation = _base_rot + Vector3(_kick_pitch, 0.0, 0.0)
+	var damp := 1.0 - _zoom
+	rig.position = _base_pos + Vector3(0.0, 0.0, _kick_pos * damp)
+	rig.rotation = _base_rot + Vector3(_kick_pitch * damp, 0.0, 0.0)
 
 ## 当前武器枪口的世界坐标（火光与曳光弹的起点）。
 func muzzle_world() -> Vector3:
