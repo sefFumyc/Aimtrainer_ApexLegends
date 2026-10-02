@@ -110,10 +110,12 @@ func apply_zoom(p: float) -> void:
 	_base_rot = Vector3(GUN_BASE_PITCH * (1.0 - _zoom), GUN_BASE_YAW * (1.0 - _zoom), 0.0)
 	_apply_rig()
 
-## 开火一瞬的后坐注入（player 调用）：按武器取各自档位（票 06 拆档）。
+## 开火一瞬的后坐注入（player 调用）：按武器取各自档位（票 06 拆档），幅度乘
+## 「枪械抖动」倍率（票 08，CONTEXT「后坐力强度」）——每次开火实时读设置，改滑条对下一发生效。
 func kick(strong: bool) -> void:
-	_kick_pos += KICK_BACK_RIFLE if strong else KICK_BACK_PISTOL
-	_kick_pitch += KICK_PITCH_RIFLE if strong else KICK_PITCH_PISTOL
+	var gun_mult := GameSettings.recoil_gun_mult_for(_weapon)
+	_kick_pos += (KICK_BACK_RIFLE if strong else KICK_BACK_PISTOL) * gun_mult
+	_kick_pitch += (KICK_PITCH_RIFLE if strong else KICK_PITCH_PISTOL) * gun_mult
 
 func _process(delta: float) -> void:
 	var k := 1.0 - exp(-KICK_RECOVER * delta)
@@ -122,12 +124,14 @@ func _process(delta: float) -> void:
 	_apply_rig()
 
 ## 挂点位姿 = 开镜基准 + 后坐偏移（后坐沿 +Z 朝相机、上抬绕 X）。
-## 枪体 kick 按 (1 − zoom_p) 衰减（票 07）：开镜时枪举在中心、红点要贴准星轴，
-## 枪模上下跳会把红点弹离轴心——Apex 的开镜后坐感由相机踢承担，枪模几乎不动。
+## 开镜枪体行为按武器分档（票 08，CONTEXT「视觉后坐力」）：步枪的**上抬角**随开镜进度
+## 收敛到零——红点贴准星轴、枪模不上下跳（前后后坐沿视线轴，红点不出轴心，满开镜呈纯
+## 前后震）；手枪**完全不收敛**——开镜与腰射一样上下跳（单发「沉」的手感）。
+## 前后位移两枪都满幅保留。
 func _apply_rig() -> void:
-	var damp := 1.0 - _zoom
-	rig.position = _base_pos + Vector3(0.0, 0.0, _kick_pos * damp)
-	rig.rotation = _base_rot + Vector3(_kick_pitch * damp, 0.0, 0.0)
+	var pitch_damp := (1.0 - _zoom) if Weapon.is_rifle(_weapon) else 1.0
+	rig.position = _base_pos + Vector3(0.0, 0.0, _kick_pos)
+	rig.rotation = _base_rot + Vector3(_kick_pitch * pitch_damp, 0.0, 0.0)
 
 ## 当前武器枪口的世界坐标（火光与曳光弹的起点）。
 func muzzle_world() -> Vector3:

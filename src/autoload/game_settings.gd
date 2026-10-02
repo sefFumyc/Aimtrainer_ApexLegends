@@ -34,6 +34,9 @@ const HIT_RATE_MIN := 0 ## 「命中率」边界（整数 0–100）
 const HIT_RATE_MAX := 100
 const DODGE_MIN_TIME_MIN := 0.0 ## 「最短躲避时间」边界（秒，0 = 关闭）
 const DODGE_MIN_TIME_MAX := 1.0
+## 「后坐力强度」四通道倍率边界（倍率量纲 0–2，票 08 / CONTEXT「后坐力强度」）。
+const RECOIL_MULT_MIN := 0.0
+const RECOIL_MULT_MAX := 2.0
 
 ## 鼠标灵敏度：对基准 rad/px 的无量纲倍率（票 05 改量纲；换算与迁移见 `InputSensitivity`）。
 var mouse_sensitivity := InputSensitivity.MOUSE_SENSITIVITY_DEFAULT
@@ -45,6 +48,12 @@ var ads_sens_mult := 0.751654
 var muzzle_flash_enabled := true
 var tracer_enabled := true
 var hit_marker_enabled := true
+## 「后坐力强度」（票 08，CONTEXT）：枪械抖动（枪体 kick）与相机抖动（相机踢）按武器
+## 分档的倍率，默认 1.0 = 定稿手感原样、0 = 关掉该通道。个人手感偏好，不进预设 19 项。
+var recoil_gun_rifle := 1.0
+var recoil_gun_pistol := 1.0
+var recoil_cam_rifle := 1.0
+var recoil_cam_pistol := 1.0
 ## 「画面质量」两档（默认中）。
 var graphics_quality: Quality = Quality.MEDIUM
 ## 靶的「体型半径」（4–60，默认 8）。
@@ -123,6 +132,10 @@ func load_settings() -> void:
 	muzzle_flash_enabled = cfg.get_value("fx", "muzzle_flash", muzzle_flash_enabled)
 	tracer_enabled = cfg.get_value("fx", "tracer", tracer_enabled)
 	hit_marker_enabled = cfg.get_value("fx", "hit_marker", hit_marker_enabled)
+	recoil_gun_rifle = clampf(cfg.get_value("recoil", "gun_rifle", recoil_gun_rifle), RECOIL_MULT_MIN, RECOIL_MULT_MAX)
+	recoil_gun_pistol = clampf(cfg.get_value("recoil", "gun_pistol", recoil_gun_pistol), RECOIL_MULT_MIN, RECOIL_MULT_MAX)
+	recoil_cam_rifle = clampf(cfg.get_value("recoil", "cam_rifle", recoil_cam_rifle), RECOIL_MULT_MIN, RECOIL_MULT_MAX)
+	recoil_cam_pistol = clampf(cfg.get_value("recoil", "cam_pistol", recoil_cam_pistol), RECOIL_MULT_MIN, RECOIL_MULT_MAX)
 	body_radius = clampf(
 		cfg.get_value("bot", "body_radius", body_radius), Physique.BODY_RADIUS_MIN, Physique.BODY_RADIUS_MAX
 	)
@@ -196,6 +209,14 @@ func avoidance_config() -> AvoidanceController.Config:
 func dodge_chance_for(weapon_id: StringName) -> float:
 	return bot_dodge_auto if Weapon.automatic(weapon_id) else bot_dodge_semi
 
+## 按玩家当前武器取「相机抖动」倍率（票 08，CONTEXT「后坐力强度」）：缩放相机踢与水平抖动。
+func recoil_cam_mult_for(weapon_id: StringName) -> float:
+	return recoil_cam_rifle if Weapon.automatic(weapon_id) else recoil_cam_pistol
+
+## 按玩家当前武器取「枪械抖动」倍率：缩放枪体后坐位移与上抬角（票 08）。
+func recoil_gun_mult_for(weapon_id: StringName) -> float:
+	return recoil_gun_rifle if Weapon.automatic(weapon_id) else recoil_gun_pistol
+
 func save_settings() -> void:
 	var cfg := ConfigFile.new()
 	cfg.set_value("input", "mouse_sensitivity", mouse_sensitivity)
@@ -205,6 +226,10 @@ func save_settings() -> void:
 	cfg.set_value("fx", "muzzle_flash", muzzle_flash_enabled)
 	cfg.set_value("fx", "tracer", tracer_enabled)
 	cfg.set_value("fx", "hit_marker", hit_marker_enabled)
+	cfg.set_value("recoil", "gun_rifle", recoil_gun_rifle)
+	cfg.set_value("recoil", "gun_pistol", recoil_gun_pistol)
+	cfg.set_value("recoil", "cam_rifle", recoil_cam_rifle)
+	cfg.set_value("recoil", "cam_pistol", recoil_cam_pistol)
 	cfg.set_value("bot", "body_radius", body_radius)
 	cfg.set_value("bot", "target_range", target_range)
 	cfg.set_value("arena", "layout", arena_layout)

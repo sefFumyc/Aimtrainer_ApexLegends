@@ -82,6 +82,7 @@ func _build() -> void:
 	_build_target_page(_page(tabs, "目标与 bot"))
 	_build_avoidance_page(_page(tabs, "躲避与移动"))
 	_build_video_page(_page(tabs, "画面与输入"))
+	_build_recoil_page(_page(tabs, "后坐力"))
 	_build_timer_page(_page(tabs, "计时器"))
 	_build_preset_page(_page(tabs, "预设"))
 
@@ -178,6 +179,21 @@ func _build_video_page(page: VBoxContainer) -> void:
 	quality.selected = GameSettings.graphics_quality
 	quality.item_selected.connect(_on_quality)
 	page.add_child(_row("画面质量", quality))
+
+## 「后坐力强度」分页（票 08）：四通道倍率滑条平铺，倍率量纲 0–2、步进 0.01、默认 1.0、
+## 两位小数；0 = 关掉该通道抖动。个人手感偏好，随 GameSettings 即改即存、不进预设。
+func _build_recoil_page(page: VBoxContainer) -> void:
+	var lo: float = GameSettings.RECOIL_MULT_MIN
+	var hi: float = GameSettings.RECOIL_MULT_MAX
+	page.add_child(_row("步枪枪械抖动", _bound_slider(lo, hi, 0.01, GameSettings.recoil_gun_rifle, &"recoil_gun_rifle")))
+	page.add_child(_row("手枪枪械抖动", _bound_slider(lo, hi, 0.01, GameSettings.recoil_gun_pistol, &"recoil_gun_pistol")))
+	page.add_child(_row("步枪相机抖动", _bound_slider(lo, hi, 0.01, GameSettings.recoil_cam_rifle, &"recoil_cam_rifle")))
+	page.add_child(_row("手枪相机抖动", _bound_slider(lo, hi, 0.01, GameSettings.recoil_cam_pistol, &"recoil_cam_pistol")))
+
+	var hint := Label.new()
+	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	hint.text = "枪械抖动 = 枪模后坐与上抬的幅度倍率；相机抖动 = 视角踢动与水平甩动的幅度倍率。1.0 为默认手感，0 为完全关闭；对下一发立即生效。"
+	page.add_child(hint)
 
 func _build_timer_page(page: VBoxContainer) -> void:
 	page.add_child(_row("间隔计时器", _bound_check(GameSettings.timer_enabled, &"timer_enabled", _on_timer_toggle)))

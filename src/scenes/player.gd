@@ -169,9 +169,11 @@ func _tick_recoil(delta: float) -> void:
 
 func _add_recoil() -> void:
 	var strong := Weapon.is_rifle(weapon)
-	_recoil_pitch += RECOIL_PITCH_RIFLE if strong else RECOIL_PITCH_PISTOL
+	# 相机抖动倍率（票 08，CONTEXT「后坐力强度」）：每次开火实时读设置，改滑条对下一发生效。
+	var cam_mult := GameSettings.recoil_cam_mult_for(weapon)
+	_recoil_pitch += (RECOIL_PITCH_RIFLE if strong else RECOIL_PITCH_PISTOL) * cam_mult
 	var jitter := RECOIL_YAW_RIFLE if strong else RECOIL_YAW_PISTOL
-	_recoil_yaw += randf_range(-jitter, jitter)
+	_recoil_yaw += randf_range(-jitter, jitter) * cam_mult
 	viewmodel.kick(strong)
 
 func _read_control() -> MovementSimulator.MoveControl:
