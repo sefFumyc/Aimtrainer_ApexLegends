@@ -68,3 +68,17 @@ Status: done
 **UI**：`settings_panel.gd`「躲避与移动」页新增攻击滑铲/重生滑铲/铲跳三开关 + 铲跳概率滑条；`_sync_slide_interlock` 统一互锁：两滑铲全关 → 铲跳置灰、概率行隐藏；任一开 → bot 开镜置灰并自动取消（`write_param` 落盘）。
 
 **验收**：GUT 全量回归 160 tests / 1175 asserts 全绿（本票新增 15 条：movement 6 + bot_ai 9）。提交 `1bb7705`。
+
+## Comments / 2026-10-03 — 表现修订（ADR-0017，agent）
+
+用户实测反馈「模型不变矮、只见莫名加速」→ 拷问定稿后落地：
+
+**坐姿三件套**（ADR-0017）：弃用不存在的 `Crouch`，改用 Knight.glb 自带 `Sit_Floor_Down`（一次性）→ `Sit_Floor_Idle`（循环）→ `Sit_Floor_StandUp`（一次性）。`target.gd` 新增滑铲姿势机 `SlidePose`（NONE/DOWN/SIT/UP/RISE/AIR）：滑铲中坐倒滑行，结束播站起；铲跳升空时从坐姿 0.15s 平滑过渡到 `Jump_Start` → `Jump_Idle`（循环），落地回站立。姿势机动作不随步频缩放（speed_scale = 1），坐姿压掉侧偏。模型缺动画时回落只压命中体（防御路径）。
+
+**朝向状态机**（ADR-0017）：`bot_ai.gd` 滑铲中朝向不再恒指玩家——起步 0.1s 转向滑行方向 → 之后按 360°/s 角速度转回玩家 → 与玩家方向夹角 ≤10° 判「瞄住」并恢复开火。`_update_firing` 加 `aimed` 闸：未瞄住时不开火不掷骰，但不清反击锁定（瞄住瞬间恢复开火）。命中体与模型随靶根 `rotation.y = sim.get_facing()` 一起转，所见即所中。
+
+**铲跳失效 bug 修复**：`settings_panel.gd` `_sync_slide_interlock` 不收参数，而 `_bound_check` 回调会传勾选状态 bool → 参数数量不匹配抛运行时错误并中断互锁 → 铲跳勾选框卡死置灰、概率滑条永不显示。修复 = 签名加可选参数 `_v: bool = false`。
+
+**测试**：`test_bot_ai.gd` 新增 3 条——朝向轨迹（转向滑行方向 ≥60° 再收口）、回头收口（0.1s 间隔收窄 ≥15°）、开火闸（未瞄住零开火、瞄住后滑铲中开火）。测试直接调私有 `_begin_slide` 注入确定几何（公共触发链方向由 rng 决定，头注已记豁免理由）。
+
+**验收**：GUT 全量回归 163 tests / 1185 asserts 全绿（本轮 bot_ai +3）。提交见 `git log`。

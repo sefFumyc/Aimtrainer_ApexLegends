@@ -44,6 +44,12 @@ const SLIDE_JUMP_MAX_T := 0.6
 const SLIDE_DIR_TRIES := 3
 ## 滑铲结束后的冷却（秒）：防「视线持续被挡」时落地即连滑。
 const SLIDE_CD := 1.0
+## 滑铲起步转身时长：面向玩家 → 面向滑行方向（ADR-0017）。
+const SLIDE_TURN_TO_DIR_T := 0.1
+## 滑铲中回头角速度 rad/s（= 360°/s，ADR-0017）。
+const SLIDE_TURN_SPEED := TAU
+## 「瞄住」容差：滑铲中与玩家方向夹角 ≤10° 恢复开火（ADR-0017）。
+const SLIDE_AIM_TOL := deg_to_rad(10.0)
 
 ## 每帧感知（由场景装配；纯逻辑测试直接构造）。
 class Perception:
@@ -84,6 +90,8 @@ var _slide_end_at := 0.0 ## 本次站起时刻
 var _slide_jump := false ## 本次滑铲是否已决定铲跳
 var _slide_jump_at := 0.0 ## 铲跳时刻
 var _slide_cd := 0.0 ## 滑铲结束后的攻击滑铲冷却
+var _slide_dir := Vector2.ZERO ## 本次滑铲的世界方向（起步转身段的目标朝向，ADR-0017）
+var _slide_face_from := 0.0 ## 滑铲起始朝向（起步段从这里插值到滑行方向，ADR-0017）
 
 ## `probe` 签名 `(origin: Vector2, dir: Vector2, length: float) -> bool`，可为空（则只做解析边界探测）。
 func _init(rng: RandomNumberGenerator, config: AvoidanceController.Config, probe := Callable()) -> void:
@@ -121,22 +129,25 @@ func update(dt: float, p: Perception) -> Array:
 	avoidance.update(dt)
 	_flip_hold = maxf(0.0, _flip_hold - dt)
 	var pos := sim.position()
-	# 「朝向」= 始终指向玩家的水平方向（yaw 绕 +Y 右旋，前向 world = (-sin, -cos)）
-	sim.set_facing(atan2(-(p.player_x - pos.x), -(p.player_z - pos.y)))
+	# 「朝向」= 指向玩家的水平方向（yaw 绕 +Y 右旋，前向 world = (-sin, -cos)）；
+	# 「bot 滑铲」期间下面由 _slide_face 改写（先转向滑行方向、再按角速度回头，ADR-0017）。
+	sim.set_facing(_player_yaw(pos, p))
 	_slide_cd = maxf(0.0, _slide_cd - dt)
-	# 「滑铲全程」（ADR-0016）：零输入直线滑行、随机时刻铲跳或站起；朝向仍指向玩家（回头射击）。
+	# 「滑铲全程」（ADR-0016 + 0017）：零输入直线滑行、随机时刻铲跳或站起；
+	# 朝向先转向滑行方向再按 360°/s 转回玩家，瞄住（夹角 ≤10°）前开火闸关闭。
 	if _sliding:
+		_slide_face(dt, pos, p)
 		_tick_slide(dt)
 		sim.advance(dt)
 		if sim.state() != "sliding":
 			_end_slide_state()
 		_handle_walls()
-		return _update_firing(dt, p)
+		return _update_firing(dt, p, _slide_aimed(pos, p))
 	# 「攻击滑铲」触发：视线被挡（bot 透视知道玩家在哪）且冷却已过 → 滑铲抢位。
 	if p.slide_attack and _slide_cd <= 0.0 and not p.line_of_sight and _try_attack_slide(pos, p):
 		sim.advance(dt)
 		_handle_walls()
-		return _update_firing(dt, p)
+		return _update_firing(dt, p, false) # 刚注入仍在起步转身段：必然未瞄住，不开火
 	var strafe := float(avoidance.dir)
 	var fwd := _fore_input(p)
 
@@ -324,6 +335,9 @@ func _begin_slide(dir: Vector2, jump: bool, jump_prob: float) -> bool:
 	_slide_end_at = _rng.randf_range(SLIDE_MIN_T, SLIDE_MAX_T)
 	_slide_jump = jump and _rng.randf() < jump_prob
 	_slide_jump_at = minf(_rng.randf_range(SLIDE_JUMP_MIN_T, SLIDE_JUMP_MAX_T), _slide_end_at)
+	# 朝向状态机（ADR-0017）：起步段从当前朝向插值到滑行方向，之后按角速度转回玩家。
+	_slide_dir = dir
+	_slide_face_from = sim.get_facing()
 	return true
 
 ## 滑铲推进：零输入（继承滑铲方向）、到点铲跳（不松蹲）、到点站起。
@@ -342,6 +356,33 @@ func _end_slide_state() -> void:
 	_sliding = false
 	_slide_jump = false
 	_slide_cd = SLIDE_CD
+
+## 滑铲朝向状态机（ADR-0017）：起步 SLIDE_TURN_TO_DIR_T 秒内从起始朝向插值到滑行方向，
+## 之后以 SLIDE_TURN_SPEED 角速度转回玩家。常规路径的 set_facing（指向玩家）在这里被改写。
+func _slide_face(dt: float, pos: Vector2, p: Perception) -> void:
+	if _slide_t < SLIDE_TURN_TO_DIR_T:
+		var k := clampf(_slide_t / SLIDE_TURN_TO_DIR_T, 0.0, 1.0)
+		sim.set_facing(lerp_angle(_slide_face_from, _dir_yaw(_slide_dir), k))
+		return
+	var to_player := _player_yaw(pos, p)
+	var step := clampf(
+		wrapf(to_player - sim.get_facing(), -PI, PI), -SLIDE_TURN_SPEED * dt, SLIDE_TURN_SPEED * dt
+	)
+	sim.set_facing(sim.get_facing() + step)
+
+## 滑铲中是否已「瞄住」玩家：起步转身段不算，之后与玩家方向夹角 ≤ SLIDE_AIM_TOL 即瞄住。
+func _slide_aimed(pos: Vector2, p: Perception) -> bool:
+	if _slide_t < SLIDE_TURN_TO_DIR_T:
+		return false
+	return absf(wrapf(_player_yaw(pos, p) - sim.get_facing(), -PI, PI)) <= SLIDE_AIM_TOL
+
+## 玩家方向 → 朝向 yaw（前向 world = (-sin, -cos)）。
+func _player_yaw(pos: Vector2, p: Perception) -> float:
+	return atan2(-(p.player_x - pos.x), -(p.player_z - pos.y))
+
+## 世界方向 → 朝向 yaw（前向 world = (-sin, -cos)）。
+func _dir_yaw(dir: Vector2) -> float:
+	return atan2(-dir.x, -dir.y)
 
 ## 滑铲方向的避障探测：解析边界 + 注入射线（与「前向探测」同一套判据）。
 func _slide_dir_blocked(pos: Vector2, dir: Vector2, length: float) -> bool:
@@ -367,10 +408,14 @@ func _try_dodge(p: Perception) -> void:
 
 # ---- 开火 ----
 
-func _update_firing(dt: float, p: Perception) -> Array:
+func _update_firing(dt: float, p: Perception, aimed := true) -> Array:
 	var shots: Array = []
 	if not p.fire_enabled:
 		_reset_fire()
+		return shots
+	if not aimed:
+		# 「滑铲未瞄住」（ADR-0017）：开火闸关闭——不掷骰、不积累瞄准、不清锁定
+		# （锁已持有则瞄住瞬间恢复开火；未持有则照常走瞄准积累）。
 		return shots
 	if not _fire_lock:
 		_aim_timer = _aim_timer + dt if _in_aim_cone(p) else 0.0

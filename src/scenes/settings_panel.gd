@@ -458,7 +458,9 @@ func _sync_controls() -> void:
 ## 滑铲互锁（ADR-0016）：两个滑铲开关都没勾 → 铲跳置灰、概率行隐藏；
 ## 任一滑铲勾上 → 「bot 常驻开镜」置灰并自动取消（开镜封速 130 < 滑铲门槛 200，
 ## 两者同时开会把注入滑铲废掉）。感知层另有同一道保险（main._build_perception）。
-func _sync_slide_interlock() -> void:
+## `_bound_check` 的开关回调会传「勾选状态 bool」——必须收下（可选），否则参数数量不匹配
+## 会抛运行时错误并中断互锁：铲跳勾选框卡死置灰、概率滑条永不显示（票 09 实测 bug，ADR-0017）。
+func _sync_slide_interlock(_v: bool = false) -> void:
 	var any := GameSettings.bot_slide_any_enabled()
 	_slide_jump_check.disabled = not any
 	_slide_jump_prob_row.visible = any and GameSettings.bot_slide_jump_enabled

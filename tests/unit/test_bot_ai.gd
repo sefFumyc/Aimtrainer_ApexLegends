@@ -2,6 +2,8 @@
 ##
 ## 只断言**外部行为**：给定感知（玩家位置与视角、设置值）与时间，断言移动、开火门控与开火结果。
 ## 场景侧的射线由注入的假实现代替，纯逻辑测试不启动场景、不需要渲染与输入设备。
+## 唯一例外（ADR-0017）：滑铲朝向/开火闸测试直接调 `_begin_slide` 注入确定几何的滑铲——
+## 公共触发链（重生垂直 / 攻击 ±90° 随机采样）方向由 rng 决定，无法保证「朝玩家滑」的断言前提。
 
 extends GutTest
 
@@ -467,3 +469,64 @@ func test_slide_jump_prob_zero_never_jumps() -> void:
 		bot.update(0.01, p)
 		airborne = airborne or bot.sim.state() == "airborne"
 	assert_false(airborne, "概率 0 不跳")
+
+# ---- 滑铲朝向与开火闸（ADR-0017）----
+
+func test_slide_facing_turns_to_dir_then_back() -> void:
+	var bot := bot_at(Vector2(0.0, -120.0))
+	var p := perception()
+	bot.try_respawn_slide(Vector2.ZERO, 40.0, false, 0.0)
+	assert_true(bot.sim.state() == "sliding", "重生滑铲已注入")
+	var turned_away := false
+	var back_at_player := false
+	# 参考方向每帧按当前位置取（bot 横移数百单位后「指向玩家」的 yaw 已不是初始值）。
+	for i in 150:
+		bot.update(0.01, p)
+		var pos := bot.sim.position()
+		var to_player := atan2(-(p.player_x - pos.x), -(p.player_z - pos.y))
+		var off := absf(wrapf(bot.sim.get_facing() - to_player, -PI, PI))
+		if i >= 6 and i < 14: # 起步转身段：面向滑行方向（垂直连线，偏离玩家 ≥60°）
+			turned_away = turned_away or off > deg_to_rad(60.0)
+		if i >= 12: # 回头伺服收口（最长约 0.8s）或站起后常规回正——都算「转回」
+			back_at_player = back_at_player or off <= BotAi.SLIDE_AIM_TOL + 0.01
+	assert_true(turned_away, "起步段先转向滑行方向（偏离玩家连线）")
+	assert_true(back_at_player, "回头段（或站起后）转回玩家（≤10° 瞄住）")
+
+func test_slide_turn_back_closes_gap() -> void:
+	# 注入垂直于玩家连线的滑铲：起步段结束后回头伺服必须以 360°/s 收口，
+	# 扣掉玩家方向随横移的扫动（≈124°/s），0.1s 内与玩家方向的夹角至少收窄 15°。
+	var bot := bot_at(Vector2(0.0, -120.0))
+	var p := perception()
+	assert_true(bot._begin_slide(Vector2(-1.0, 0.0), false, 0.0), "注入垂直滑铲")
+	var off_at := func(frame: int) -> float:
+		for j in frame:
+			bot.update(0.01, p)
+		var pos := bot.sim.position()
+		var to_player := atan2(-(p.player_x - pos.x), -(p.player_z - pos.y))
+		return absf(wrapf(bot.sim.get_facing() - to_player, -PI, PI))
+	var early: float = off_at.call(11) # 起步段刚结束
+	var late: float = off_at.call(21) # 回头 0.1s 后
+	assert_gt(early, deg_to_rad(60.0), "起步段结束仍偏离玩家")
+	assert_gt(early - late, deg_to_rad(15.0), "回头伺服按角速度收口")
+
+func test_slide_firing_gated_until_aimed() -> void:
+	# 直接注入「朝玩家方向」的滑铲（绕过随机方向采样，几何确定）：
+	# 起步转身段（前 0.1s）必未瞄住 → 零开火；之后朝向即对准玩家 → 滑铲中立即开火。
+	var bot := bot_at(Vector2(0.0, -120.0))
+	var p := perception()
+	p.fire_enabled = true
+	p.hit_rate = 100
+	p.line_of_sight = true
+	assert_false(bot.take_damage(1, p), "非致命受击 → 反击锁定立即持有")
+	assert_true(bot._begin_slide(Vector2(0.0, 1.0), false, 0.0), "注入朝玩家的滑铲")
+	var early_shots := 0
+	var aimed_sliding_shots := 0
+	for i in 60:
+		aim_at(p, bot)
+		var shots: Array = bot.update(0.01, p)
+		if i < 10:
+			early_shots += shots.size()
+		elif bot.sim.state() == "sliding":
+			aimed_sliding_shots += shots.size()
+	assert_eq(early_shots, 0, "起步转身段开火闸关闭：零开火")
+	assert_gt(aimed_sliding_shots, 0, "瞄住后滑铲中即开火")

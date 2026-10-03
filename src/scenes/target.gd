@@ -2,7 +2,8 @@
 ##
 ## `CharacterBody3D` 只做碰撞求解（与 Player 同构）：水平位移由 `BotAi.sim` 按固定子步算好，
 ## 这里每帧把「本帧位移 ÷ delta」喂给 `velocity`，`move_and_slide()` 后再把真实位置回写给 sim。
-## 朝向每帧指向玩家（CONTEXT「朝向」）——侧移方向是相对朝向的，所以表现为围着玩家画弧。
+## 朝向每帧跟随 `BotAi.sim`（CONTEXT「朝向」：常规指向玩家，滑铲中由其朝向状态机驱动，
+## ADR-0017）——侧移方向是相对朝向的，所以表现为围着玩家画弧。
 ##
 ## ❗ **移动碰撞体**与**命中体**是两件事（ADR-0014）：
 ## - 移动 = 半径 8、高 72 的胶囊（与 Player 同构），只挡遮挡物与地面，任何射线都看不见它；
@@ -58,8 +59,15 @@ const CLIP_LEFT := "Running_Strafe_Left"
 const CLIP_RIGHT := "Running_Strafe_Right"
 const CLIP_FORWARD := "Walking_A"
 const CLIP_BACKWARD := "Walking_Backwards"
-## 滑铲动作（票 09）：KayKit 无此动作时回落到「只压低命中体、不换动画」。
-const CLIP_CROUCH := "Crouch"
+## 滑铲姿势（ADR-0017）：模型自带「坐地」三件套——坐倒（一次性）→ 坐姿滑行（循环）→ 站起（一次性）。
+const CLIP_SLIDE_DOWN := "Sit_Floor_Down"
+const CLIP_SLIDE_IDLE := "Sit_Floor_Idle"
+const CLIP_SLIDE_UP := "Sit_Floor_StandUp"
+## 铲跳升空（ADR-0017）：从坐姿平滑过渡回正常跳跃——起跳（一次性）→ 空中（循环）。
+const CLIP_JUMP_START := "Jump_Start"
+const CLIP_JUMP_IDLE := "Jump_Idle"
+## 姿势机切换动作用的过渡时长：比走跑混合（250/200ms）更快，滑铲 0.35–0.9s 里不显拖沓。
+const SLIDE_POSE_BLEND := 0.15
 ## 本票会播的全部动作：KayKit 的 GLB 里它们是按「不循环」导入的，`_setup_animation` 要逐个改成循环。
 const CLIPS: Array[String] = [
 	CLIP_IDLE, CLIP_LEFT, CLIP_RIGHT, CLIP_FORWARD, CLIP_BACKWARD
@@ -94,8 +102,14 @@ var _skeleton: Skeleton3D ## Knight 骨架（_attach_weapon 缓存，_sync_gun �
 var _pose := PoseBlend.new()
 ## 当前在播的动作名（只在切换时调 `play`，避免每帧重启动画）。
 var _clip := ""
-## 滑铲时强制播放的动作名（模型存在 Crouch 时非空，否则为空串=不换动画）。
-var _crouch_clip := ""
+## 滑铲姿势机状态（ADR-0017）：NONE = 不接管（常规走/跑）。
+enum SlidePose { NONE, DOWN, SIT, UP, RISE, AIR }
+var _slide_pose := SlidePose.NONE
+## 模型是否带齐坐地三件套（缺任何一支则姿势机不接管，回落到只压低命中体）。
+var _slide_pose_clips := false
+## 模型是否带齐跳跃两件套（铲跳升空用；缺失则 DOWN/SIT 态遇升空会在空中播站起收尾——
+## 防御路径，Knight.glb 带齐两件套，不会走到）。
+var _jump_pose_clips := false
 
 func _ready() -> void:
 	visible = false
@@ -115,6 +129,8 @@ func spawn(at: Vector2) -> void:
 	ai.spawn(at)
 	global_position = Vector3(at.x, 0.0, at.y)
 	_pose.reset()
+	_slide_pose = SlidePose.NONE
+	_clip = "" # 强制下一帧重新 play：上一条命可能定格在任意动作的半截（含滑铲姿势）
 	if _pose_lean != null:
 		_pose_lean.apply(0.0)
 	visible = true
@@ -204,10 +220,9 @@ func _apply_motion(delta: float, before: Vector2, perception: BotAi.Perception) 
 	ai.sim.sync_position(Vector2(global_position.x, global_position.z))
 	# 滑铲 / 蹲伏时命中体整体压低（票 09）：与 sim 的蹲伏进度同步，保证「所见即所中」。
 	_hit_body.position.y = MovementSimulator.CROUCH_HEIGHT * ai.sim.crouch_progress()
-	# 「朝向」= 始终指向玩家的水平方向（yaw 绕 +Y 右旋，前向 world = (-sin, -cos)）
-	rotation.y = atan2(
-		-(perception.player_x - global_position.x), -(perception.player_z - global_position.z)
-	)
+	# 「朝向」跟随 sim（ADR-0017）：常规 = 指向玩家；滑铲中由 BotAi 的朝向状态机驱动
+	# （先转向滑行方向、再按角速度转回）。命中体与模型同为根子节点，随根一起转——所见即所中。
+	rotation.y = ai.sim.get_facing()
 
 ## 「前向探测」的射线实现（ADR-0005）：只探世界层（遮挡物），不探玩家与自身。
 ## 起点已在遮挡物内部时 `intersect_ray` 默认不报（`hit_from_inside = false`），
@@ -228,20 +243,84 @@ func _apply_pose(delta: float) -> void:
 	var v := ai.sim.velocity()
 	var local := MovementSimulator.world_to_local(v.x, v.y, ai.sim.get_facing())
 	var frame := _pose.update(delta, ai.sim.speed(), local.x, local.y)
+	# 滑铲姿势机（ADR-0017）：返回非空 = 接管本帧动作（坐地 / 跳跃 / 站起），并压掉侧偏。
+	var pose_clip := _slide_pose_clip()
 	if _anim != null:
 		var clip := _clip_for(frame.motion, local.y)
-		if _crouch_clip != "" and ai.sim.state() == "sliding":
-			clip = _crouch_clip # 滑铲全程压低身姿（crouch 进度由 movement.gd 驱动）
+		var blend := frame.blend
+		if pose_clip != "":
+			clip = pose_clip
+			blend = SLIDE_POSE_BLEND
 		if clip != _clip:
 			_clip = clip
-			_anim.play(clip, frame.blend) # 过渡时长就取姿势混合的 250/200/250ms
-		# 步频跟随速度：静止动作不缩放，走动动作按归一化速率调速，与当前速率**等比例**（CONTEXT「步态周期」）。
-		_anim.speed_scale = 1.0 if clip == CLIP_IDLE else frame.gait
+			_anim.play(clip, blend) # 过渡时长就取姿势混合的 250/200/250ms
+		# 步频跟随速度：静止与姿势机动作不缩放，走动动作按归一化速率调速，与当前速率**等比例**（CONTEXT「步态周期」）。
+		_anim.speed_scale = 1.0 if (clip == CLIP_IDLE or pose_clip != "") else frame.gait
 		# 动画走 MANUAL：由这里推进，好让紧接着的侧偏写骨确定地落在动画**之后**（见 pose_lean.gd 头注）。
 		_anim.advance(delta)
 	if _pose_lean != null:
-		_pose_lean.apply(frame.lean)
+		_pose_lean.apply(0.0 if pose_clip != "" else frame.lean)
 	_sync_gun() # 手动同步枪到右手骨（为什么不用 BoneAttachment3D，见 _attach_weapon）
+
+## 滑铲姿势机（ADR-0017）：返回本帧应播的动作；空串 = 不接管（常规走/跑）。
+## 迁移只由 `ai.sim.state()` 驱动：sliding → 坐（Down→Idle）；铲跳升空 → 跳（Start→Idle）；
+## 站起 → Up 一次性收尾；落地 → 直接回常规。一次性动作播完用播放位置判据（MANUAL 推进不依赖信号）。
+func _slide_pose_clip() -> String:
+	if not _slide_pose_clips:
+		return ""
+	var state := ai.sim.state()
+	match _slide_pose:
+		SlidePose.NONE:
+			if state == "sliding":
+				_slide_pose = SlidePose.DOWN
+				return CLIP_SLIDE_DOWN
+			return ""
+		SlidePose.DOWN:
+			if state == "sliding":
+				if _pose_anim_done(CLIP_SLIDE_DOWN):
+					_slide_pose = SlidePose.SIT
+					return CLIP_SLIDE_IDLE
+				return CLIP_SLIDE_DOWN
+			if state == "airborne" and _jump_pose_clips: # 刚坐下就铲跳（窗口 [0.1s, 0.6s] 内不可能，防御）
+				_slide_pose = SlidePose.RISE
+				return CLIP_JUMP_START
+			_slide_pose = SlidePose.UP
+			return CLIP_SLIDE_UP
+		SlidePose.SIT:
+			if state == "sliding":
+				return CLIP_SLIDE_IDLE
+			if state == "airborne" and _jump_pose_clips: # 铲跳：坐姿 → 正常跳跃（平滑过渡）
+				_slide_pose = SlidePose.RISE
+				return CLIP_JUMP_START
+			_slide_pose = SlidePose.UP
+			return CLIP_SLIDE_UP
+		SlidePose.UP:
+			if state == "sliding": # 站起动画未播完又注入滑铲（冷却边界）：重新坐倒
+				_slide_pose = SlidePose.DOWN
+				return CLIP_SLIDE_DOWN
+			if _pose_anim_done(CLIP_SLIDE_UP):
+				_slide_pose = SlidePose.NONE
+				return ""
+			return CLIP_SLIDE_UP
+		SlidePose.RISE:
+			if state == "airborne":
+				if _pose_anim_done(CLIP_JUMP_START):
+					_slide_pose = SlidePose.AIR
+					return CLIP_JUMP_IDLE
+				return CLIP_JUMP_START
+			_slide_pose = SlidePose.NONE # 起跳被卡没升空 / 已落地：回常规
+			return ""
+		SlidePose.AIR:
+			if state == "airborne":
+				return CLIP_JUMP_IDLE
+			_slide_pose = SlidePose.NONE # 落地恢复站立（常规走跑接管）
+			return ""
+	return ""
+
+## 一次性动作是否已播完（MANUAL 推进下用播放位置判据，不依赖信号时序）。
+func _pose_anim_done(clip: String) -> bool:
+	return _anim.current_animation != clip \
+		or _anim.current_animation_position >= _anim.get_animation(clip).length
 
 ## 把枪的世界变换对齐到右手骨**当前位置 + 纯旋转**（丢弃骨链缩放），缩放直接用世界级标量。
 func _sync_gun() -> void:
@@ -280,10 +359,16 @@ func _setup_animation() -> void:
 		var clip_anim := _anim.get_animation(name)
 		if clip_anim != null:
 			clip_anim.loop_mode = Animation.LOOP_LINEAR
-	# 滑铲动作是可选项：模型带了才接管滑铲期间的动作选择，否则保持走/跑动画。
-	if _anim.has_animation(CLIP_CROUCH):
-		_crouch_clip = CLIP_CROUCH
-		_anim.get_animation(CLIP_CROUCH).loop_mode = Animation.LOOP_LINEAR
+	# 滑铲姿势三件套（ADR-0017）：Down / Up 保持导入的「不循环」，Idle 改循环。
+	# 任一缺失则整个姿势机不接管（回落到走/跑动画 + 只压低命中体）。
+	_slide_pose_clips = _anim.has_animation(CLIP_SLIDE_DOWN) \
+		and _anim.has_animation(CLIP_SLIDE_IDLE) and _anim.has_animation(CLIP_SLIDE_UP)
+	if _slide_pose_clips:
+		_anim.get_animation(CLIP_SLIDE_IDLE).loop_mode = Animation.LOOP_LINEAR
+	# 铲跳升空两件套（ADR-0017）：Start 一次性、Idle 循环；缺失则铲跳期间保持坐姿收尾。
+	_jump_pose_clips = _anim.has_animation(CLIP_JUMP_START) and _anim.has_animation(CLIP_JUMP_IDLE)
+	if _jump_pose_clips:
+		_anim.get_animation(CLIP_JUMP_IDLE).loop_mode = Animation.LOOP_LINEAR
 	_pose_lean = PoseLean.new()
 	_pose_lean.setup(skeleton)
 	_attach_weapon(skeleton)
