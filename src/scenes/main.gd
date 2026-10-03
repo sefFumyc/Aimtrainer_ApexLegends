@@ -40,12 +40,18 @@ const HIT_SOUND := "res://assets/audio/hit.wav"
 const KILL_SOUND := "res://assets/audio/kill.wav"
 const PRE_BEEP_SOUND := "res://assets/audio/pre_beep.wav"
 const START_BEEP_SOUND := "res://assets/audio/start_beep.wav"
+const RESPAWN_SOUND := "res://assets/audio/respawn.wav"
 const SHOT_VOLUME := 0.18
 const HIT_VOLUME := 0.29
 const HEADSHOT_VOLUME := 0.36
 const KILL_VOLUME := 0.42
 const PRE_BEEP_VOLUME := 0.26
 const START_BEEP_VOLUME := 0.32
+const RESPAWN_VOLUME := 0.32
+## 刷新音 3D 衰减基准（ADR-0019）：拉到 400 保证「目标距离」上限 800u 处仍可闻——
+## 方位感由声像偏移给出，音量只在远近距离间小幅收敛，不做 2D 保底双播。
+const RESPAWN_UNIT_SIZE := 400.0
+const RESPAWN_HEIGHT := BOT_TRACER_HEIGHT ## 刷新音高度 = bot 身体中段，与曳光终点同一口径
 const PITCH_JITTER := 0.05 ## ±5% 音高微差
 const HEADSHOT_PITCH := 1.122462 ## 2^(2/12)，爆头 +2 半音
 const PRE_BEEP_SECONDS := 5 ## 「预哔」：环节切换前 5 秒每秒一声
@@ -88,6 +94,7 @@ var _hit_audio: AudioStreamPlayer
 var _kill_audio: AudioStreamPlayer
 var _pre_beep_audio: AudioStreamPlayer
 var _start_beep_audio: AudioStreamPlayer
+var _respawn_audio: AudioStreamPlayer3D ## 刷新三维定位音（ADR-0019）：全套音效里唯一带方位感的
 
 ## 每帧装配一次的 bot 感知；玩家开火（物理帧）也复用它，不必重算。
 var _perception := BotAi.Perception.new()
@@ -136,11 +143,22 @@ func _process(delta: float) -> void:
 	_tick_hotkeys()
 
 func _tick_hotkeys() -> void:
+	if Input.is_action_just_pressed("toggle_fullscreen"):
+		_toggle_fullscreen()
 	if Input.is_action_just_pressed("toggle_settings"):
 		settings_panel.toggle()
 		return
 	if Input.is_action_just_pressed("ui_cancel"):
 		_on_escape()
+
+## F11 切换 窗口 ↔ 独占全屏（ADR-0019）：会话级热键，不持久化、任何舞台可用。
+func _toggle_fullscreen() -> void:
+	var window := get_window()
+	window.mode = (
+		Window.MODE_WINDOWED
+		if window.mode == Window.MODE_EXCLUSIVE_FULLSCREEN
+		else Window.MODE_EXCLUSIVE_FULLSCREEN
+	)
 
 ## ESC：菜单 / 结算下不做事；对局与计时会话的任一阶段都结束本局并给出结算。
 func _on_escape() -> void:
@@ -358,6 +376,7 @@ func _apply_quality() -> void:
 func _respawn_target() -> void:
 	var at := _pick_spawn()
 	target.spawn(Vector2(at.x, at.z))
+	_play_respawn_sound() # 「刷新音效」（ADR-0019）：每次刷新都响，含开局首刷
 	# 「重生滑铲」（ADR-0016）：刷新瞬间沿玩家连线垂直方向滑出，探测长度与「前向探测」同一口径。
 	if GameSettings.bot_respawn_slide_enabled:
 		target.ai.try_respawn_slide(
@@ -366,6 +385,15 @@ func _respawn_target() -> void:
 			GameSettings.bot_slide_jump_enabled,
 			GameSettings.bot_slide_jump_prob
 		)
+
+## 刷新音（ADR-0019）：三维定位音挂在 bot 刷新点，玩家凭声像判断方位。
+func _play_respawn_sound() -> void:
+	if _respawn_audio.stream == null:
+		return
+	_respawn_audio.global_position = Vector3(
+		target.global_position.x, RESPAWN_HEIGHT, target.global_position.z
+	)
+	_respawn_audio.play()
 
 ## 在玩家前方 ±90° 的半圆弧上取「目标距离」处的点：避开围墙、遮挡物，
 ## 且不落在玩家当前的「瞄准视锥」内（票 02 验收 8）。
@@ -502,6 +530,7 @@ func _resolve_bot_shot(hit: bool) -> void:
 	)
 	if not hit:
 		return
+	hud.flash_hurt() # 「受击红屏」（ADR-0019）：被打侧的即时视觉反馈，与命中提示对偶
 	if GameSettings.lifesteal_enabled:
 		match_state.heal_bot(BotAi.BOT_DAMAGE) # 「吸血」：bot 命中固定回 25
 	match_state.player_hp = maxi(0, match_state.player_hp - BotAi.BOT_DAMAGE)
@@ -553,6 +582,13 @@ func _build_audio() -> void:
 	_kill_audio = _make_audio("KillAudio", KILL_SOUND)
 	_pre_beep_audio = _make_audio("PreBeepAudio", PRE_BEEP_SOUND)
 	_start_beep_audio = _make_audio("StartBeepAudio", START_BEEP_SOUND)
+	_respawn_audio = AudioStreamPlayer3D.new()
+	_respawn_audio.name = "RespawnAudio"
+	if ResourceLoader.exists(RESPAWN_SOUND):
+		_respawn_audio.stream = load(RESPAWN_SOUND)
+	_respawn_audio.volume_db = linear_to_db(RESPAWN_VOLUME)
+	_respawn_audio.unit_size = RESPAWN_UNIT_SIZE
+	add_child(_respawn_audio)
 
 func _make_audio(node_name: String, path: String) -> AudioStreamPlayer:
 	var player := AudioStreamPlayer.new()

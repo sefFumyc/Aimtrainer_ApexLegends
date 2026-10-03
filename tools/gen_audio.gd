@@ -3,7 +3,8 @@
 ## 用法（一次性，产物提交进仓库）：
 ##   godot --headless --path . -s tools/gen_audio.gd
 ##
-## 生成五种音：枪声 155Hz、击中 200Hz、击杀 240ms 上行两音（660→990Hz），
+## 生成六种音：枪声 155Hz、击中 200Hz、击杀 240ms 上行两音（660→990Hz），
+## 刷新 240ms 下行两音（990→660Hz，与击杀音镜像对偶，ADR-0019），
 ## 以及计时会话的两个提示音——准备段逐秒预哔 660Hz、开始哔 990Hz（票 03）。
 ## 包络与参考实现逐字一致：约 30ms 时长、4ms 缓起音、陡衰减、无噪声瞬态。
 
@@ -18,6 +19,7 @@ func _initialize() -> void:
 	_write("shot.wav", _make_shot())
 	_write("hit.wav", _make_hit())
 	_write("kill.wav", _make_kill())
+	_write("respawn.wav", _make_respawn())
 	_write("pre_beep.wav", _make_pre_beep())
 	_write("start_beep.wav", _make_start_beep())
 	quit()
@@ -42,11 +44,19 @@ func _make_hit() -> PackedFloat32Array:
 
 ## 击杀音：240ms、两段各 100ms 的上行纯五度（660Hz → 990Hz），基频 + 0.35 × 2 倍泛音、(1−p)^2 衰减，总幅 0.28。
 func _make_kill() -> PackedFloat32Array:
+	return _two_tone([[0.0, 660.0], [0.11, 990.0]])
+
+## 刷新音（ADR-0019）：下行两音（990Hz → 660Hz），与击杀音镜像对偶——上行 = 杀死（奖励感），下行 = 出现（落定感）。
+func _make_respawn() -> PackedFloat32Array:
+	return _two_tone([[0.0, 990.0], [0.11, 660.0]])
+
+## 两音框架（击杀 / 刷新共用）：240ms、两段各 100ms 的纯五度序列，
+## 基频 + 0.35 × 2 倍泛音、(1−p)^2 衰减、总幅 0.28。
+func _two_tone(tones: Array) -> PackedFloat32Array:
 	var duration := 0.24
 	var n := int(MIX_RATE * duration)
 	var out := PackedFloat32Array()
 	out.resize(n)
-	var tones := [[0.0, 660.0], [0.11, 990.0]]
 	for i in range(n):
 		var t := float(i) / MIX_RATE
 		var v := 0.0

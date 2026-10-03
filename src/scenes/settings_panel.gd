@@ -195,6 +195,7 @@ func _build_video_page(page: VBoxContainer) -> void:
 	page.add_child(_row("枪口火光", _bound_check(GameSettings.muzzle_flash_enabled, &"muzzle_flash_enabled")))
 	page.add_child(_row("曳光弹", _bound_check(GameSettings.tracer_enabled, &"tracer_enabled")))
 	page.add_child(_row("命中提示", _bound_check(GameSettings.hit_marker_enabled, &"hit_marker_enabled")))
+	page.add_child(_row("受击红屏", _bound_check(GameSettings.hit_flash_enabled, &"hit_flash_enabled")))
 
 	var quality := OptionButton.new()
 	quality.add_item("低", GameSettings.Quality.LOW)

@@ -48,6 +48,8 @@ var ads_sens_mult := 0.751654
 var muzzle_flash_enabled := true
 var tracer_enabled := true
 var hit_marker_enabled := true
+## 「受击红屏」（ADR-0019）：玩家被 bot 命中时全屏泛红渐隐的开关，与「命中提示」对偶。
+var hit_flash_enabled := true
 ## 「后坐力强度」（票 08，CONTEXT）：枪械抖动（枪体 kick）与相机抖动（相机踢）按武器
 ## 分档的倍率，默认 1.0 = 定稿手感原样、0 = 关掉该通道。个人手感偏好，不进预设 19 项。
 var recoil_gun_rifle := 1.0
@@ -138,6 +140,7 @@ func load_settings() -> void:
 	muzzle_flash_enabled = cfg.get_value("fx", "muzzle_flash", muzzle_flash_enabled)
 	tracer_enabled = cfg.get_value("fx", "tracer", tracer_enabled)
 	hit_marker_enabled = cfg.get_value("fx", "hit_marker", hit_marker_enabled)
+	hit_flash_enabled = cfg.get_value("fx", "hit_flash", hit_flash_enabled)
 	recoil_gun_rifle = clampf(cfg.get_value("recoil", "gun_rifle", recoil_gun_rifle), RECOIL_MULT_MIN, RECOIL_MULT_MAX)
 	recoil_gun_pistol = clampf(cfg.get_value("recoil", "gun_pistol", recoil_gun_pistol), RECOIL_MULT_MIN, RECOIL_MULT_MAX)
 	recoil_cam_rifle = clampf(cfg.get_value("recoil", "cam_rifle", recoil_cam_rifle), RECOIL_MULT_MIN, RECOIL_MULT_MAX)
@@ -242,6 +245,7 @@ func save_settings() -> void:
 	cfg.set_value("fx", "muzzle_flash", muzzle_flash_enabled)
 	cfg.set_value("fx", "tracer", tracer_enabled)
 	cfg.set_value("fx", "hit_marker", hit_marker_enabled)
+	cfg.set_value("fx", "hit_flash", hit_flash_enabled)
 	cfg.set_value("recoil", "gun_rifle", recoil_gun_rifle)
 	cfg.set_value("recoil", "gun_pistol", recoil_gun_pistol)
 	cfg.set_value("recoil", "cam_rifle", recoil_cam_rifle)

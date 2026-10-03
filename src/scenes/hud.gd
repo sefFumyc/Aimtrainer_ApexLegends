@@ -23,7 +23,14 @@ const MARKER_WIDTH_KILL := 5.0
 const HIT_COLOR := Color(1.0, 1.0, 1.0, 0.95) ## 命中：白 X
 const KILL_COLOR := Color(0.96, 0.16, 0.16, 1.0) ## 击杀：红 X
 
+## 受击红屏（ADR-0019，CONTEXT「受击红屏」）：玩家被命中时全屏泛红、随即线性渐隐。
+## 与「击中提示」对偶——那个管打人，这个管被打。时序在纯逻辑类 `HitFlashTiming`
+## （ADR-0009 同 `HitMarkerTiming` 的分工），这里只把 alpha 落到节点。纯渲染：不参与任何判定与结算。
+const HIT_FLASH_PEAK := 0.32 ## 泛红峰值不透明度
+const HIT_FLASH_COLOR := Color(0.82, 0.08, 0.08)
+
 var _marker := HitMarkerTiming.new()
+var _flash := HitFlashTiming.new() ## 受击红屏时序（纯逻辑）
 var _match: DuelMatch = null
 var _zoom := 0.0 ## 开镜进度（票 07）：白准星透明度 = 1 − 进度，随开关镜平滑淡出/渐回
 
@@ -44,14 +51,28 @@ func flash(kind: StringName) -> void:
 	if GameSettings.hit_marker_enabled:
 		_marker.event(kind)
 
+## 受击红屏事件（受「受击红屏」开关控制）：重复命中刷新计时，从峰值重新渐隐。
+func flash_hurt() -> void:
+	if GameSettings.hit_flash_enabled:
+		_flash.flash()
+
 func _process(delta: float) -> void:
 	_marker.tick(delta * 1000.0)
+	_flash.tick(delta)
 	queue_redraw()
 
 func _draw() -> void:
+	_draw_hurt_flash()
 	_draw_crosshair()
 	_draw_marker()
 	_draw_text()
+
+func _draw_hurt_flash() -> void:
+	var ratio := _flash.tick(0.0) # 0–1；_process 已推进，这里只读当前值
+	if ratio <= 0.0:
+		return
+	var alpha := HIT_FLASH_PEAK * ratio
+	draw_rect(Rect2(Vector2.ZERO, size), Color(HIT_FLASH_COLOR.r, HIT_FLASH_COLOR.g, HIT_FLASH_COLOR.b, alpha))
 
 func _draw_crosshair() -> void:
 	# 淡出只作用于白准星（票 07）：让位给红点镜；命中 X 与数字不受影响。
