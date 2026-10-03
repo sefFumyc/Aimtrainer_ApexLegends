@@ -1,6 +1,6 @@
 # 09 — bot 滑铲：攻击滑铲 + 重生滑铲 + 铲跳
 
-Status: in-progress
+Status: done
 
 术语以 `CONTEXT.md` 为准（「bot 滑铲」「攻击滑铲」「重生滑铲」「铲跳」为本票新增、「滑铲跳跃」限定为玩家动作、「bot 开镜」补互锁，均已落稿）。移动偏离见 ADR-0016（速度直接注入 + ADS 互锁）。依赖票 01–08（全部已 done）。
 
@@ -54,3 +54,17 @@ Status: in-progress
 
 `test_movement.gd` 补注入滑铲 6 条；`test_bot_ai.gd` 补滑铲决策 9 条；全量回归。
 - 验收：GUT 全绿。
+
+## Comments / 2026-10-03 — 实现收尾（agent）
+
+**注入 API**：`movement.gd` 新增 `start_slide(dir, speed)`（置 `_slide_auto`，维持不依赖蹲键）、`end_slide()`（只对注入态生效，玩家滑铲不受影响）、`crouch_progress()` 读数；`reset` / 普通滑铲跳 / 手动滑铲跳分支同步清理 `_slide_auto`。玩家侧触发链零改动。
+
+**滑铲决策**：`bot_ai.gd` 新增滑铲段（常量：注入速度 399、滑行 0.35–0.9s、铲跳时刻 0.1–0.6s 且不晚于站起、避障重试 3 次、冷却 1s）。`update` 滑铲分支：零输入直线滑行、`avoidance`/探测/贴墙内拐全部冻结、开火照常（`_update_firing` 照常推进）；滑完/铲跳升空/站起统一走 `_end_slide_state` 进冷却。死亡 `take_damage` 同步清 `_sliding`/`_slide_jump`（`spawn` 亦兜底重置）。`probe_length_for` 提为 static 供场景复用同一口径。
+
+**设置与预设**：`game_settings.gd` 4 键进 `settings.cfg` `bot` 段（概率读入 clamp 0–1）+ `bot_slide_any_enabled()` 互锁判定辅助；`preset_store.gd` FIELDS/DEFAULTS 扩到 23 项，注释同步。
+
+**场景装配**：`main.gd` 感知装配 `slide_attack`/`slide_jump`/`slide_jump_prob`，ADS 互锁 = `p.ads = bot_ads_enabled and not bot_slide_any_enabled()`（感知层保险，UI 层另有置灰）；`_respawn_target` 在 `spawn()` 后按开关触发 `try_respawn_slide`。`target.gd`：命中体每帧按 `CROUCH_HEIGHT × crouch_progress` 下沉；`_setup_animation` 检测模型含 `Crouch` 才接管滑铲动画（Knight.glb 已核无此动作，当前走命中体下沉回落路径）。
+
+**UI**：`settings_panel.gd`「躲避与移动」页新增攻击滑铲/重生滑铲/铲跳三开关 + 铲跳概率滑条；`_sync_slide_interlock` 统一互锁：两滑铲全关 → 铲跳置灰、概率行隐藏；任一开 → bot 开镜置灰并自动取消（`write_param` 落盘）。
+
+**验收**：GUT 全量回归 160 tests / 1175 asserts 全绿（本票新增 15 条：movement 6 + bot_ai 9）。提交 `1bb7705`。
