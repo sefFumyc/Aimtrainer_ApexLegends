@@ -471,6 +471,26 @@ func test_slide_jump_ratio_and_air_friction() -> void:
 	sim.advance(0.2)
 	assert_lt(sim.speed(), boosted, "滑铲跳独有的空中摩擦")
 
+## 铲跳的垂直轨迹（ADR-0018）：表现层抬升读数 `jump_height()`（不含蹲伏位移）——
+## 升到解析峰值 286²/(2×790) ≈ 51.8u 后落地归零。
+func test_slide_jump_height_rises_and_lands() -> void:
+	var sim := MovementSimulator.new()
+	sim.set_control(ctl(0.0, 1.0, true))
+	sim.advance(3.0)
+	sim.set_control(ctl(0.0, 1.0, true, true))
+	sim.advance(0.2)
+	sim.set_control(ctl(0.0, 1.0, true, true, true)) # 滑铲跳
+	sim.advance(MovementSimulator.SUBSTEP)
+	var peak := 0.0
+	for i in 100: # 1.0s：滞空 2×286/790 ≈ 0.72s 足够走完
+		sim.advance(0.01)
+		peak = maxf(peak, sim.jump_height())
+	var expected := MovementSimulator.JUMP_VELOCITY * MovementSimulator.JUMP_VELOCITY \
+		/ (2.0 * MovementSimulator.GRAVITY)
+	# 容差 1.0：半隐式欧拉的子步积分峰值比解析值低约 0.5（实测 51.23 vs 51.77）
+	assert_almost_eq(peak, expected, 1.0, "铲跳离地峰值 ≈52u")
+	assert_almost_eq(sim.jump_height(), 0.0, 0.01, "落地归零")
+
 func test_normal_jump_has_no_air_friction() -> void:
 	var sim := MovementSimulator.new()
 	run_full(sim)

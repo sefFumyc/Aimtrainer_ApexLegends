@@ -534,5 +534,10 @@ func vertical_speed() -> float:
 func height() -> float:
 	return _height_v + CROUCH_HEIGHT * _crouch_p
 
+## 跳跃离地高度（≥0）：不含蹲伏位移的纯垂直分量，落地归零。
+## bot 铲跳的表现层抬升用它（ADR-0018）：视觉模型 / 命中体 / 枪口一起抬，移动碰撞不跟。
+func jump_height() -> float:
+	return _height_v
+
 func state() -> String:
 	return _state

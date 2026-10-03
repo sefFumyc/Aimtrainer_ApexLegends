@@ -491,8 +491,9 @@ func _on_shot_fired(id: StringName) -> void:
 # ---- 开火：bot ----
 
 ## bot 每发开火的结算：音效 → 枪口火光 → 曳光（bot 枪口 → 玩家当前坐标，纯视觉）→ 命中扣血。
+## 曳光起点用 `muzzle_world_visual()`：铲跳升空时跟着抬（ADR-0018）；视线判定仍走地面口径。
 func _resolve_bot_shot(hit: bool) -> void:
-	var muzzle := target.muzzle_world()
+	var muzzle := target.muzzle_world_visual()
 	_play_sound(_shot_audio, SHOT_VOLUME, _shot_pitch())
 	_play_fx(
 		_bot_fx,
