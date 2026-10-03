@@ -32,6 +32,19 @@ const FLIP_COMMIT := 0.3
 ## 物理实际位移低于纯逻辑步长的这个比例即视为「被挡住」。
 const BLOCK_RATIO := 0.5
 
+## 「bot 滑铲」（票 09 / ADR-0016）：注入初速定稿 399 u/s——玩家看不见前摇，直接满速滑出。
+const SLIDE_INJECT_SPEED := 399.0
+## 滑行时长随机窗口（秒）：到点站起恢复常规躲避。
+const SLIDE_MIN_T := 0.35
+const SLIDE_MAX_T := 0.9
+## 铲跳时刻随机窗口（秒，从滑铲开始计；不超过站起时刻）。
+const SLIDE_JUMP_MIN_T := 0.1
+const SLIDE_JUMP_MAX_T := 0.6
+## 攻击滑铲方向采样次数（玩家连线 ±90° 内随机取向，避障失败重掷）。
+const SLIDE_DIR_TRIES := 3
+## 滑铲结束后的冷却（秒）：防「视线持续被挡」时落地即连滑。
+const SLIDE_CD := 1.0
+
 ## 每帧感知（由场景装配；纯逻辑测试直接构造）。
 class Perception:
 	var player_x := 0.0 ## 玩家水平位置
@@ -49,6 +62,9 @@ class Perception:
 	var line_of_sight := true ## 「视线判定」（场景每帧对玩家做一次遮挡射线）
 	var dodge_chance := 0.0 ## 「躲避概率」（按玩家当前武器分连发/单发两档）
 	var arena_layout := 1 ## 「场地布局」档位（驱动前向探测长度）
+	var slide_attack := false ## 「攻击滑铲」开关（视线被挡时触发）
+	var slide_jump := false ## 「铲跳」开关（滑铲中不松蹲跳起晃子弹）
+	var slide_jump_prob := 0.3 ## 「铲跳概率」（每次滑铲独立掷骰）
 
 var sim := MovementSimulator.new()
 var avoidance: AvoidanceController
@@ -62,6 +78,12 @@ var _fire_timer := 0.0
 var _aim_timer := 0.0
 var _fire_lock := false
 var _flip_hold := 0.0 ## 距下一次允许「探测 / 受阻」翻向的剩余秒数（承诺窗口）
+var _sliding := false ## 注入滑铲进行中（全程冻结躲避与探测，只保留开火）
+var _slide_t := 0.0 ## 已滑行秒数
+var _slide_end_at := 0.0 ## 本次站起时刻
+var _slide_jump := false ## 本次滑铲是否已决定铲跳
+var _slide_jump_at := 0.0 ## 铲跳时刻
+var _slide_cd := 0.0 ## 滑铲结束后的攻击滑铲冷却
 
 ## `probe` 签名 `(origin: Vector2, dir: Vector2, length: float) -> bool`，可为空（则只做解析边界探测）。
 func _init(rng: RandomNumberGenerator, config: AvoidanceController.Config, probe := Callable()) -> void:
@@ -80,6 +102,9 @@ func spawn(at: Vector2) -> void:
 	respawn_left = 0.0
 	_reset_fire()
 	_flip_hold = 0.0
+	_sliding = false
+	_slide_jump = false
+	_slide_cd = 0.0
 	avoidance.spawn()
 
 ## 清除攻击锁定与两项计时（玩家重生时调用）：bot 之后重新按视锥计时。
@@ -98,6 +123,20 @@ func update(dt: float, p: Perception) -> Array:
 	var pos := sim.position()
 	# 「朝向」= 始终指向玩家的水平方向（yaw 绕 +Y 右旋，前向 world = (-sin, -cos)）
 	sim.set_facing(atan2(-(p.player_x - pos.x), -(p.player_z - pos.y)))
+	_slide_cd = maxf(0.0, _slide_cd - dt)
+	# 「滑铲全程」（ADR-0016）：零输入直线滑行、随机时刻铲跳或站起；朝向仍指向玩家（回头射击）。
+	if _sliding:
+		_tick_slide(dt)
+		sim.advance(dt)
+		if sim.state() != "sliding":
+			_end_slide_state()
+		_handle_walls()
+		return _update_firing(dt, p)
+	# 「攻击滑铲」触发：视线被挡（bot 透视知道玩家在哪）且冷却已过 → 滑铲抢位。
+	if p.slide_attack and _slide_cd <= 0.0 and not p.line_of_sight and _try_attack_slide(pos, p):
+		sim.advance(dt)
+		_handle_walls()
+		return _update_firing(dt, p)
 	var strafe := float(avoidance.dir)
 	var fwd := _fore_input(p)
 
@@ -136,6 +175,8 @@ func take_damage(damage: int, p: Perception) -> bool:
 		alive = false
 		respawn_left = RESPAWN_DELAY
 		sim.reset()
+		_sliding = false
+		_slide_jump = false
 		_reset_fire()
 		return true
 	_try_dodge(p)
@@ -192,7 +233,11 @@ func _wander_input(p: Perception) -> float:
 # ---- 前向探测与撞墙 ----
 
 func _probe_length(p: Perception) -> float:
-	return float(PROBE_LENGTHS[clampi(p.arena_layout, 0, PROBE_LENGTHS.size() - 1)])
+	return probe_length_for(p.arena_layout)
+
+## 「前向探测」长度的静态取值（场景在「重生滑铲」时用同一口径）。
+static func probe_length_for(layout: int) -> float:
+	return float(PROBE_LENGTHS[clampi(layout, 0, PROBE_LENGTHS.size() - 1)])
 
 ## 沿本帧移动方向探测：解析边界优先，其次交给注入的射线（遮挡物）。
 func _probe_blocked(pos: Vector2, strafe: float, fwd: float, length: float) -> bool:
@@ -236,6 +281,73 @@ func _strafe_dir_vec(dir: int, yaw: float) -> Vector2:
 
 func _pushes_outward(pos: Vector2, v: Vector2) -> bool:
 	return pos.dot(v) > 0.0
+
+# ---- bot 滑铲（ADR-0016）----
+
+## 「重生滑铲」：刷新瞬间沿玩家连线垂直方向（左右各 50%）注入滑铲；两侧都受阻则放弃。
+## 由场景在 `spawn()` 之后调用一次。
+func try_respawn_slide(player_pos: Vector2, probe_len: float, jump: bool, jump_prob: float) -> void:
+	if not alive or _sliding:
+		return
+	var pos := sim.position()
+	var line := player_pos - pos
+	if line.length() < 1e-6:
+		return
+	var perp := Vector2(-line.y, line.x).normalized()
+	var dir := perp if _rng.randf() < 0.5 else -perp
+	if _slide_dir_blocked(pos, dir, probe_len):
+		dir = -dir
+		if _slide_dir_blocked(pos, dir, probe_len):
+			return
+	_begin_slide(dir, jump, jump_prob)
+
+## 「攻击滑铲」方向采样：玩家连线 ±90° 内随机取向，最多 SLIDE_DIR_TRIES 次避障重试。
+func _try_attack_slide(pos: Vector2, p: Perception) -> bool:
+	var line := Vector2(p.player_x, p.player_z) - pos
+	if line.length() < 1e-6:
+		return false
+	var base := atan2(line.y, line.x)
+	for i in SLIDE_DIR_TRIES:
+		var a := base + (_rng.randf() * 2.0 - 1.0) * PI * 0.5
+		var dir := Vector2(cos(a), sin(a))
+		if not _slide_dir_blocked(pos, dir, _probe_length(p)) \
+				and _begin_slide(dir, p.slide_jump, p.slide_jump_prob):
+			return true
+	return false
+
+## 注入滑铲并掷本次的随机节奏：滑行时长、是否铲跳与铲跳时刻（不晚于站起时刻）。
+func _begin_slide(dir: Vector2, jump: bool, jump_prob: float) -> bool:
+	if not sim.start_slide(dir, SLIDE_INJECT_SPEED):
+		return false
+	_sliding = true
+	_slide_t = 0.0
+	_slide_end_at = _rng.randf_range(SLIDE_MIN_T, SLIDE_MAX_T)
+	_slide_jump = jump and _rng.randf() < jump_prob
+	_slide_jump_at = minf(_rng.randf_range(SLIDE_JUMP_MIN_T, SLIDE_JUMP_MAX_T), _slide_end_at)
+	return true
+
+## 滑铲推进：零输入（继承滑铲方向）、到点铲跳（不松蹲）、到点站起。
+func _tick_slide(dt: float) -> void:
+	_slide_t += dt
+	var ctl := MovementSimulator.MoveControl.new()
+	if _slide_jump and _slide_t >= _slide_jump_at:
+		_slide_jump = false
+		ctl.jump = true # movement.gd 的滑铲跳分支处理：继承方向、垂直 286、空中带摩擦
+	sim.set_control(ctl)
+	if _slide_t >= _slide_end_at and sim.state() == "sliding":
+		sim.end_slide() # 随机时刻站起
+
+## 滑铲状态收尾（滑完 / 铲跳升空 / 手动站起统一走这里）。
+func _end_slide_state() -> void:
+	_sliding = false
+	_slide_jump = false
+	_slide_cd = SLIDE_CD
+
+## 滑铲方向的避障探测：解析边界 + 注入射线（与「前向探测」同一套判据）。
+func _slide_dir_blocked(pos: Vector2, dir: Vector2, length: float) -> bool:
+	if _hits_boundary(pos, dir, length):
+		return true
+	return bool(_probe.call(pos, dir, length)) if _probe.is_valid() else false
 
 # ---- 躲避 ----
 

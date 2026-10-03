@@ -358,6 +358,14 @@ func _apply_quality() -> void:
 func _respawn_target() -> void:
 	var at := _pick_spawn()
 	target.spawn(Vector2(at.x, at.z))
+	# 「重生滑铲」（ADR-0016）：刷新瞬间沿玩家连线垂直方向滑出，探测长度与「前向探测」同一口径。
+	if GameSettings.bot_respawn_slide_enabled:
+		target.ai.try_respawn_slide(
+			Vector2(player.global_position.x, player.global_position.z),
+			BotAi.probe_length_for(GameSettings.arena_layout),
+			GameSettings.bot_slide_jump_enabled,
+			GameSettings.bot_slide_jump_prob
+		)
 
 ## 在玩家前方 ±90° 的半圆弧上取「目标距离」处的点：避开围墙、遮挡物，
 ## 且不落在玩家当前的「瞄准视锥」内（票 02 验收 8）。
@@ -515,7 +523,12 @@ func _build_perception() -> void:
 	p.fire_enabled = GameSettings.bot_fire_enabled
 	p.hit_rate = GameSettings.bot_hit_rate
 	p.body_radius = GameSettings.body_radius
-	p.ads = GameSettings.bot_ads_enabled
+	# ADS 与 bot 滑铲互锁（ADR-0016）：任一滑铲开启时「bot 常驻开镜」失效——
+	# 开镜封速 130 < 滑铲门槛 200，同时开启会把注入滑铲直接废掉。
+	p.ads = GameSettings.bot_ads_enabled and not GameSettings.bot_slide_any_enabled()
+	p.slide_attack = GameSettings.bot_attack_slide_enabled
+	p.slide_jump = GameSettings.bot_slide_jump_enabled and GameSettings.bot_slide_any_enabled()
+	p.slide_jump_prob = GameSettings.bot_slide_jump_prob
 	p.line_of_sight = _bot_has_sight()
 	p.dodge_chance = GameSettings.dodge_chance_for(player.weapon)
 	p.arena_layout = GameSettings.arena_layout

@@ -91,6 +91,12 @@ var bot_dodge_semi := 0.4
 ## 「最短躲避时间」（0–1.0 秒，默认 0.15，0 = 关闭）：只约束躲避。
 var bot_dodge_min_time := 0.15
 
+## 「bot 滑铲」（票 09 / ADR-0016）：攻击滑铲与重生滑铲两个开关 + 铲跳开关与概率。
+## 任一滑铲开启时「bot 常驻开镜」互锁关闭（开镜封速 130 < 滑铲门槛 200，同时开会废掉滑铲）。
+var bot_attack_slide_enabled := false
+var bot_respawn_slide_enabled := false
+var bot_slide_jump_enabled := false
+var bot_slide_jump_prob := 0.3
 ## 「吸血」（默认关）：命中方按本次伤害回血，封顶 600。
 var lifesteal_enabled := false
 ## 「间隔计时器」（默认关）：启用后主菜单「开始」进入计时会话。
@@ -163,6 +169,12 @@ func load_settings() -> void:
 	bot_dodge_min_time = clampf(
 		cfg.get_value("bot", "dodge_min_time", bot_dodge_min_time), DODGE_MIN_TIME_MIN, DODGE_MIN_TIME_MAX
 	)
+	bot_attack_slide_enabled = cfg.get_value("bot", "attack_slide", bot_attack_slide_enabled)
+	bot_respawn_slide_enabled = cfg.get_value("bot", "respawn_slide", bot_respawn_slide_enabled)
+	bot_slide_jump_enabled = cfg.get_value("bot", "slide_jump", bot_slide_jump_enabled)
+	bot_slide_jump_prob = clampf(
+		cfg.get_value("bot", "slide_jump_prob", bot_slide_jump_prob), WEIGHT_MIN, WEIGHT_MAX
+	)
 	lifesteal_enabled = cfg.get_value("duel", "lifesteal", lifesteal_enabled)
 	timer_enabled = cfg.get_value("timer", "enabled", timer_enabled)
 	auto_adjust_radius = cfg.get_value("timer", "auto_adjust_radius", auto_adjust_radius)
@@ -204,6 +216,10 @@ func avoidance_config() -> AvoidanceController.Config:
 	var out := AvoidanceController.Config.new()
 	apply_avoidance_config(out)
 	return out
+
+## 任一 bot 滑铲开关是否开启（ADS 互锁与铲跳可用性判定共用）。
+func bot_slide_any_enabled() -> bool:
+	return bot_attack_slide_enabled or bot_respawn_slide_enabled
 
 ## 按玩家当前武器取「躲避概率」：连发（步枪）用「连发」档，单发（手枪）用「单发」档。
 func dodge_chance_for(weapon_id: StringName) -> float:
@@ -249,6 +265,10 @@ func save_settings() -> void:
 	cfg.set_value("bot", "dodge_auto", bot_dodge_auto)
 	cfg.set_value("bot", "dodge_semi", bot_dodge_semi)
 	cfg.set_value("bot", "dodge_min_time", bot_dodge_min_time)
+	cfg.set_value("bot", "attack_slide", bot_attack_slide_enabled)
+	cfg.set_value("bot", "respawn_slide", bot_respawn_slide_enabled)
+	cfg.set_value("bot", "slide_jump", bot_slide_jump_enabled)
+	cfg.set_value("bot", "slide_jump_prob", bot_slide_jump_prob)
 	cfg.set_value("duel", "lifesteal", lifesteal_enabled)
 	cfg.set_value("timer", "enabled", timer_enabled)
 	cfg.set_value("timer", "auto_adjust_radius", auto_adjust_radius)
@@ -263,14 +283,14 @@ func save_settings() -> void:
 
 # ---- 预设（票 03 第 4 节 / CONTEXT.md「预设」「活文档」）----
 
-## 取当前 19 项的预设快照（字段清单唯一来源是 `PresetStore.FIELDS`，不在此重复列举）。
+## 取当前 23 项的预设快照（字段清单唯一来源是 `PresetStore.FIELDS`，不在此重复列举）。
 func capture_preset() -> Dictionary:
 	var values := {}
 	for field in PresetStore.FIELDS:
 		values[field] = get(field)
 	return values
 
-## 把一份 19 项快照写进全局设置（切预设用；不走 `write_param`，避免触发写回）。
+## 把一份 23 项快照写进全局设置（切预设用；不走 `write_param`，避免触发写回）。
 func apply_preset(values: Dictionary) -> void:
 	for field in PresetStore.FIELDS:
 		if values.has(field):
@@ -302,7 +322,7 @@ func erase_preset(name: String) -> void:
 	presets.erase(name)
 	save_settings()
 
-## 设置一项并持久化；若当前选中预设且该项属于「预设」19 项，改动自动写回该预设（活文档）。
+## 设置一项并持久化；若当前选中预设且该项属于「预设」23 项，改动自动写回该预设（活文档）。
 func write_param(prop: StringName, value: Variant) -> void:
 	set(prop, value)
 	if PresetStore.FIELDS.has(String(prop)):

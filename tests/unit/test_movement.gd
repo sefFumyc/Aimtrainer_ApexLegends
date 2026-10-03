@@ -533,3 +533,73 @@ func test_state_reporting() -> void:
 	assert_eq(sim.state(), "decelerating")
 	sim.advance(0.2)
 	assert_eq(sim.state(), "idle")
+
+# ---- 注入滑铲（bot 用，ADR-0016）----
+
+func test_injected_slide_starts_full_speed_without_prerequisites() -> void:
+	# 不疾跑、不蹲、无前摇：注入当帧就是满速滑行
+	var sim := MovementSimulator.new()
+	assert_true(sim.start_slide(Vector2(0.0, -1.0), 399.0))
+	assert_eq(sim.state(), "sliding")
+	assert_almost_eq(sim.speed(), 399.0, 0.01)
+	assert_almost_eq(sim.velocity().y, -399.0, 0.01)
+
+func test_injected_slide_sustains_without_crouch_key() -> void:
+	# bot 不按蹲键（_slide_auto）：不会被「松开蹲」提前掐断
+	var sim := MovementSimulator.new()
+	sim.start_slide(Vector2(0.0, -1.0), 399.0)
+	sim.advance(0.4) # 已越过蹲到底的 0.15s
+	assert_eq(sim.state(), "sliding", "没有蹲键输入也维持滑行")
+	assert_almost_eq(sim.crouch_progress(), 1.0, 1e-6, "蹲伏进度照常压满（命中体压低共用）")
+
+func test_injected_slide_decelerates_like_normal_slide() -> void:
+	var sim := MovementSimulator.new()
+	sim.start_slide(Vector2(0.0, -1.0), 399.0)
+	sim.advance(0.2) # 蹲满（0.15s）后再滑一小段
+	var s := sim.speed()
+	sim.advance(0.1)
+	assert_almost_eq(
+		sim.speed(), s - MovementSimulator.SLIDE_DECEL * MovementSimulator.SPEED_MULT_GUN * 0.1, 0.5,
+		"蹲满后按 210 × 速度修正器 减速"
+	)
+
+func test_end_slide_stops_injected_slide_only() -> void:
+	var sim := MovementSimulator.new()
+	sim.start_slide(Vector2(0.0, -1.0), 399.0)
+	sim.end_slide()
+	sim.advance(0.05)
+	assert_ne(sim.state(), "sliding", "手动站起立即退出滑行")
+	# 玩家的普通滑铲（非注入）不受 end_slide 影响
+	var sim2 := MovementSimulator.new()
+	sim2.set_control(ctl(0.0, 1.0, true))
+	sim2.advance(3.0)
+	sim2.set_control(ctl(0.0, 1.0, true, true))
+	sim2.advance(0.2)
+	assert_eq(sim2.state(), "sliding")
+	sim2.end_slide()
+	sim2.advance(0.05)
+	assert_eq(sim2.state(), "sliding", "玩家滑铲不吃 end_slide")
+
+func test_start_slide_rejects_airborne_double_and_zero() -> void:
+	var sim := MovementSimulator.new()
+	sim.start_slide(Vector2(0.0, -1.0), 399.0)
+	assert_false(sim.start_slide(Vector2(1.0, 0.0), 399.0), "滑行中不可再次注入")
+	var sim2 := MovementSimulator.new()
+	sim2.set_control(ctl(0.0, 1.0, false, false, true))
+	sim2.advance(0.05)
+	assert_true(sim2.height() > 0.0)
+	assert_false(sim2.start_slide(Vector2(0.0, -1.0), 399.0), "空中不可注入")
+	assert_false(sim.start_slide(Vector2.ZERO, 399.0), "零向量拒绝")
+
+func test_injected_slide_jump_inherits_direction() -> void:
+	var sim := MovementSimulator.new()
+	sim.start_slide(Vector2(-1.0, 0.0), 399.0)
+	sim.advance(0.2)
+	var heading := atan2(sim.velocity().y, sim.velocity().x)
+	sim.set_control(ctl(0.0, 0.0, false, false, true)) # 铲跳：跳、不松蹲也不需要
+	sim.advance(MovementSimulator.SUBSTEP)
+	sim.set_control(ctl(0.0, 0.0))
+	sim.advance(0.02)
+	assert_eq(sim.state(), "airborne", "铲跳升空")
+	assert_almost_eq(atan2(sim.velocity().y, sim.velocity().x), heading, 1e-3, "继承滑铲方向")
+	assert_almost_eq(sim.vertical_speed(), MovementSimulator.JUMP_VELOCITY - MovementSimulator.GRAVITY * 0.02, 0.5, "垂直仍 286 起步")

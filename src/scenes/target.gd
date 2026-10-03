@@ -58,6 +58,8 @@ const CLIP_LEFT := "Running_Strafe_Left"
 const CLIP_RIGHT := "Running_Strafe_Right"
 const CLIP_FORWARD := "Walking_A"
 const CLIP_BACKWARD := "Walking_Backwards"
+## 滑铲动作（票 09）：KayKit 无此动作时回落到「只压低命中体、不换动画」。
+const CLIP_CROUCH := "Crouch"
 ## 本票会播的全部动作：KayKit 的 GLB 里它们是按「不循环」导入的，`_setup_animation` 要逐个改成循环。
 const CLIPS: Array[String] = [
 	CLIP_IDLE, CLIP_LEFT, CLIP_RIGHT, CLIP_FORWARD, CLIP_BACKWARD
@@ -92,6 +94,8 @@ var _skeleton: Skeleton3D ## Knight 骨架（_attach_weapon 缓存，_sync_gun �
 var _pose := PoseBlend.new()
 ## 当前在播的动作名（只在切换时调 `play`，避免每帧重启动画）。
 var _clip := ""
+## 滑铲时强制播放的动作名（模型存在 Crouch 时非空，否则为空串=不换动画）。
+var _crouch_clip := ""
 
 func _ready() -> void:
 	visible = false
@@ -198,6 +202,8 @@ func _apply_motion(delta: float, before: Vector2, perception: BotAi.Perception) 
 
 	global_position.y = 0.0
 	ai.sim.sync_position(Vector2(global_position.x, global_position.z))
+	# 滑铲 / 蹲伏时命中体整体压低（票 09）：与 sim 的蹲伏进度同步，保证「所见即所中」。
+	_hit_body.position.y = MovementSimulator.CROUCH_HEIGHT * ai.sim.crouch_progress()
 	# 「朝向」= 始终指向玩家的水平方向（yaw 绕 +Y 右旋，前向 world = (-sin, -cos)）
 	rotation.y = atan2(
 		-(perception.player_x - global_position.x), -(perception.player_z - global_position.z)
@@ -224,6 +230,8 @@ func _apply_pose(delta: float) -> void:
 	var frame := _pose.update(delta, ai.sim.speed(), local.x, local.y)
 	if _anim != null:
 		var clip := _clip_for(frame.motion, local.y)
+		if _crouch_clip != "" and ai.sim.state() == "sliding":
+			clip = _crouch_clip # 滑铲全程压低身姿（crouch 进度由 movement.gd 驱动）
 		if clip != _clip:
 			_clip = clip
 			_anim.play(clip, frame.blend) # 过渡时长就取姿势混合的 250/200/250ms
@@ -272,6 +280,10 @@ func _setup_animation() -> void:
 		var clip_anim := _anim.get_animation(name)
 		if clip_anim != null:
 			clip_anim.loop_mode = Animation.LOOP_LINEAR
+	# 滑铲动作是可选项：模型带了才接管滑铲期间的动作选择，否则保持走/跑动画。
+	if _anim.has_animation(CLIP_CROUCH):
+		_crouch_clip = CLIP_CROUCH
+		_anim.get_animation(CLIP_CROUCH).loop_mode = Animation.LOOP_LINEAR
 	_pose_lean = PoseLean.new()
 	_pose_lean.setup(skeleton)
 	_attach_weapon(skeleton)

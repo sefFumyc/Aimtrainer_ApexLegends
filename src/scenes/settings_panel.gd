@@ -29,6 +29,10 @@ var _movement_mode: OptionButton
 var _auto_radius: CheckButton
 var _preset_select: OptionButton
 var _preset_name: LineEdit
+var _slide_attack_check: CheckButton
+var _slide_respawn_check: CheckButton
+var _slide_jump_check: CheckButton
+var _slide_jump_prob_row: HBoxContainer
 
 ## prop → 控件：切预设后按需回灌数值（`set_value_no_signal` 避免反过来再写一遍）。
 var _controls := {}
@@ -141,6 +145,25 @@ func _build_avoidance_page(page: VBoxContainer) -> void:
 	page.add_child(_row("进攻倾向", _bound_slider(0.0, 1.0, 0.05, GameSettings.bot_aggression, &"bot_aggression")))
 	page.add_child(_row("撤退倾向", _bound_slider(0.0, 1.0, 0.05, GameSettings.bot_retreat, &"bot_retreat")))
 	page.add_child(_row("走廊半宽", _bound_slider(0.0, 300.0, 5.0, GameSettings.bot_range_amp, &"bot_range_amp")))
+
+	# bot 滑铲（票 09）：两个滑铲开关 + 铲跳（受前置条件门控）+ 铲跳概率。
+	_slide_attack_check = _bound_check(
+		GameSettings.bot_attack_slide_enabled, &"bot_attack_slide_enabled", _sync_slide_interlock
+	)
+	_slide_respawn_check = _bound_check(
+		GameSettings.bot_respawn_slide_enabled, &"bot_respawn_slide_enabled", _sync_slide_interlock
+	)
+	_slide_jump_check = _bound_check(
+		GameSettings.bot_slide_jump_enabled, &"bot_slide_jump_enabled", _sync_slide_interlock
+	)
+	page.add_child(_row("攻击滑铲", _slide_attack_check))
+	page.add_child(_row("重生滑铲", _slide_respawn_check))
+	page.add_child(_row("铲跳", _slide_jump_check))
+	_slide_jump_prob_row = _row(
+		"铲跳概率", _bound_slider(0.0, 1.0, 0.05, GameSettings.bot_slide_jump_prob, &"bot_slide_jump_prob")
+	)
+	page.add_child(_slide_jump_prob_row)
+	_sync_slide_interlock()
 
 func _build_video_page(page: VBoxContainer) -> void:
 	page.add_child(
@@ -430,6 +453,20 @@ func _sync_controls() -> void:
 	_movement_mode.selected = GameSettings.bot_movement_mode
 	_hit_rate_row.visible = GameSettings.bot_fire_enabled
 	_auto_radius.disabled = not GameSettings.timer_enabled
+	_sync_slide_interlock()
+
+## 滑铲互锁（ADR-0016）：两个滑铲开关都没勾 → 铲跳置灰、概率行隐藏；
+## 任一滑铲勾上 → 「bot 常驻开镜」置灰并自动取消（开镜封速 130 < 滑铲门槛 200，
+## 两者同时开会把注入滑铲废掉）。感知层另有同一道保险（main._build_perception）。
+func _sync_slide_interlock() -> void:
+	var any := GameSettings.bot_slide_any_enabled()
+	_slide_jump_check.disabled = not any
+	_slide_jump_prob_row.visible = any and GameSettings.bot_slide_jump_enabled
+	var ads_check := _controls["bot_ads_enabled"] as CheckButton
+	ads_check.disabled = any
+	if any and ads_check.button_pressed:
+		ads_check.set_pressed_no_signal(false)
+		GameSettings.write_param(&"bot_ads_enabled", false)
 
 func _on_layout(index: int) -> void:
 	_write(&"arena_layout", _layout.get_item_id(index))

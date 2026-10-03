@@ -365,3 +365,105 @@ func test_dead_bot_respawns_after_delay() -> void:
 	assert_false(bot.alive, "倒计时未走完仍是死亡状态")
 	bot.update(0.2, p)
 	assert_true(bot.respawn_left <= 0.0, "倒计时走完，该刷新了")
+
+# ---- bot 滑铲（票 09 / ADR-0016）----
+
+func test_respawn_slide_moves_perpendicular_to_player_line() -> void:
+	# 玩家在原点、bot 在 (0,-120)：连线垂直方向 = ±x，滑铲只动 x 不动 z
+	var bot := bot_at(Vector2(0.0, -120.0))
+	bot.try_respawn_slide(Vector2.ZERO, 120.0, false, 0.0)
+	for i in 20:
+		bot.update(0.01, perception())
+	var pos := bot.sim.position()
+	assert_gt(absf(pos.x), 30.0, "沿垂直方向滑出（0.2s × 399 u/s）")
+	assert_almost_eq(pos.y, -120.0, 1e-6, "垂直滑铲不沿连线进退")
+
+func test_respawn_slide_avoids_blocked_side() -> void:
+	# +x 侧探到受阻：只剩 −x 可滑
+	var probe := func(_origin: Vector2, dir: Vector2, _length: float) -> bool: return dir.x > 0.0
+	var bot := bot_at(Vector2(0.0, -120.0), probe)
+	bot.try_respawn_slide(Vector2.ZERO, 120.0, false, 0.0)
+	for i in 20:
+		bot.update(0.01, perception())
+	assert_lt(bot.sim.position().x, -30.0, "受阻一侧被放弃，滑向另一侧")
+
+func test_respawn_slide_gives_up_when_both_sides_blocked() -> void:
+	var probe := func(_origin: Vector2, _dir: Vector2, _length: float) -> bool: return true
+	var bot := bot_at(Vector2(0.0, -120.0), probe)
+	bot.try_respawn_slide(Vector2.ZERO, 120.0, false, 0.0)
+	assert_lt(bot.sim.speed(), 1.0, "两侧都受阻 → 放弃滑铲")
+
+func test_attack_slide_triggers_when_line_of_sight_blocked() -> void:
+	var bot := bot_at(Vector2(0.0, -120.0))
+	var p := perception()
+	p.slide_attack = true
+	p.line_of_sight = false
+	var fastest := 0.0
+	for i in 60:
+		bot.update(0.01, p)
+		fastest = maxf(fastest, bot.sim.speed())
+	assert_gt(fastest, 380.0, "视线被挡 → 注入满速滑铲（≈399，无前摇）")
+
+func test_no_attack_slide_when_line_of_sight_clear() -> void:
+	var bot := bot_at(Vector2(0.0, -120.0))
+	var p := perception()
+	p.slide_attack = true # 视线通畅不触发
+	var fastest := 0.0
+	for i in 60:
+		bot.update(0.01, p)
+		fastest = maxf(fastest, bot.sim.speed())
+	assert_lt(fastest, GUN_CAP + 1.0)
+
+func test_no_attack_slide_when_switch_off() -> void:
+	var bot := bot_at(Vector2(0.0, -120.0))
+	var p := perception()
+	p.line_of_sight = false # 挡视线但开关没开
+	var fastest := 0.0
+	for i in 60:
+		bot.update(0.01, p)
+		fastest = maxf(fastest, bot.sim.speed())
+	assert_lt(fastest, GUN_CAP + 1.0)
+
+func test_attack_slide_cooldown_prevents_chain_slides() -> void:
+	# 滑行 ≥0.35s + 冷却 1s ⇒ 2 秒内最多 2 次滑铲（无冷却时会落地就连滑）
+	var bot := bot_at(Vector2(0.0, -120.0))
+	var p := perception()
+	p.slide_attack = true
+	p.line_of_sight = false
+	var starts := 0
+	var was_sliding := false
+	for i in 200:
+		bot.update(0.01, p)
+		var sliding := bot.sim.state() == "sliding"
+		if sliding and not was_sliding:
+			starts += 1
+		was_sliding = sliding
+	assert_lte(starts, 2, "冷却挡住连环滑铲")
+
+func test_slide_jump_prob_one_leaves_ground() -> void:
+	var bot := bot_at(Vector2(0.0, -120.0))
+	var p := perception()
+	p.slide_attack = true
+	p.line_of_sight = false
+	p.slide_jump = true
+	p.slide_jump_prob = 1.0
+	var airborne := false
+	for i in 200: # 2 秒足够覆盖铲跳时刻窗口 [0.1, 0.6]
+		bot.update(0.01, p)
+		if bot.sim.state() == "airborne":
+			airborne = true
+			break
+	assert_true(airborne, "铲跳概率 1.0 ⇒ 滑铲中必定升空")
+
+func test_slide_jump_prob_zero_never_jumps() -> void:
+	var bot := bot_at(Vector2(0.0, -120.0))
+	var p := perception()
+	p.slide_attack = true
+	p.line_of_sight = false
+	p.slide_jump = true
+	p.slide_jump_prob = 0.0
+	var airborne := false
+	for i in 200:
+		bot.update(0.01, p)
+		airborne = airborne or bot.sim.state() == "airborne"
+	assert_false(airborne, "概率 0 不跳")

@@ -125,6 +125,7 @@ var _vz_v := 0.0 ## 垂直速度
 var _crouch_p := 0.0 ## 0 站 / 1 蹲
 var _airborne := false
 var _slide := false
+var _slide_auto := false ## 注入滑铲（bot 用，ADR-0016）：维持不依赖蹲键
 var _slide_friction := false
 var _sprint_latch := false ## 疾跑粘滞：Shift 松开但前向输入持续时保持疾跑
 var _yaw := 0.0
@@ -165,6 +166,33 @@ func get_facing() -> float:
 func set_zoom(p: float) -> void:
 	_zoom = clampf(p, 0.0, 1.0)
 
+## 直接注入一次滑铲（bot 用，ADR-0016）：沿世界方向 `dir` 以 `speed` 初速进入滑铲。
+## 不要求疾跑前摇与蹲键——玩家不该看到 bot 的滑铲预备；维持不靠蹲键（`_slide_auto`）。
+func start_slide(dir: Vector2, speed: float) -> bool:
+	if _airborne or _slide or speed <= 0.0:
+		return false
+	var m := sqrt(dir.x * dir.x + dir.y * dir.y)
+	if m < 1e-6:
+		return false
+	_slide = true
+	_slide_auto = true
+	_turn = null
+	_sprint_latch = false
+	_vx = dir.x / m * speed
+	_vz = dir.y / m * speed
+	_state = "sliding"
+	return true
+
+## 提前结束注入滑铲（bot 在随机时刻站起，恢复常规躲避）。
+func end_slide() -> void:
+	if _slide and _slide_auto:
+		_slide = false
+		_slide_auto = false
+
+## 蹲伏进度（0 站 / 1 蹲）：命中体压低与滑铲表现共用。
+func crouch_progress() -> float:
+	return _crouch_p
+
 ## 场景层碰撞求解后回写位置（ADR-0002）：`CharacterBody3D.move_and_slide()` 的结果可能与
 ## 本类的积分位置不同（被箱体/柱体挡住）。把求解后的真实位置同步回来，避免下一帧
 ## 又从「穿进障碍物里」的位置继续积分。速度不回写——速度仍由本类全权决定。
@@ -182,6 +210,7 @@ func reset(initial := Vector2.ZERO) -> void:
 	_crouch_p = 0.0
 	_airborne = false
 	_slide = false
+	_slide_auto = false
 	_slide_friction = false
 	_sprint_latch = false
 	_zoom = 0.0
@@ -265,9 +294,11 @@ func _step_ground(h: float) -> void:
 			_vx *= ratio
 			_vz *= ratio
 			_slide = false
+			_slide_auto = false
 			_slide_friction = true
 		else:
 			_slide = false
+			_slide_auto = false
 		_vz_v = JUMP_VELOCITY
 		_height_v = 0.0
 		_airborne = true
@@ -283,8 +314,8 @@ func _step_ground(h: float) -> void:
 		_vz *= SLIDE_INITIAL_FACTOR
 
 	if _slide:
-		if not _ctl_crouch:
-			_slide = false # 松开蹲提前结束 → 走普通减速
+		if not _ctl_crouch and not _slide_auto:
+			_slide = false # 松开蹲提前结束（注入滑铲除外）→ 走普通减速
 		else:
 			var s := sqrt(_vx * _vx + _vz * _vz)
 			if s <= CROUCH_SPEED + 1e-6:
