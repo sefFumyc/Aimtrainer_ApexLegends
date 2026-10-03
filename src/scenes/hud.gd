@@ -23,20 +23,25 @@ const MARKER_WIDTH_KILL := 5.0
 const HIT_COLOR := Color(1.0, 1.0, 1.0, 0.95) ## 命中：白 X
 const KILL_COLOR := Color(0.96, 0.16, 0.16, 1.0) ## 击杀：红 X
 
-## 受击红屏（ADR-0019，CONTEXT「受击红屏」）：玩家被命中时全屏泛红、随即线性渐隐。
-## 与「击中提示」对偶——那个管打人，这个管被打。时序在纯逻辑类 `HitFlashTiming`
-## （ADR-0009 同 `HitMarkerTiming` 的分工），这里只把 alpha 落到节点。纯渲染：不参与任何判定与结算。
+## 受击红屏（ADR-0020 修订 ADR-0019，CONTEXT「受击红屏」）：玩家被命中时屏幕边缘泛起
+## 红晕、随即线性渐隐——径向渐变：中心完全透明，从约 75% 半径处起色，红带只占最外约
+## 25%，四角最浓（空区多、红带窄，用户要求不全屏晃眼）。与「击中提示」对偶——那个管
+## 打人，这个管被打。时序在纯逻辑类 `HitFlashTiming`（ADR-0009 同 `HitMarkerTiming`
+## 的分工），这里只把 alpha 落到节点。纯渲染：不参与任何判定与结算。
 const HIT_FLASH_PEAK := 0.32 ## 泛红峰值不透明度
+const HIT_FLASH_BAND_START := 0.75 ## 径向渐变起色点（0–1，越大空区越大、红带越窄）
 const HIT_FLASH_COLOR := Color(0.82, 0.08, 0.08)
 
 var _marker := HitMarkerTiming.new()
 var _flash := HitFlashTiming.new() ## 受击红屏时序（纯逻辑）
+var _flash_tex: GradientTexture2D ## 边缘红晕的径向渐变纹理（_ready 建一次，绘制时调 modulate）
 var _match: DuelMatch = null
 var _zoom := 0.0 ## 开镜进度（票 07）：白准星透明度 = 1 − 进度，随开关镜平滑淡出/渐回
 
 func _ready() -> void:
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
 	set_anchors_preset(Control.PRESET_FULL_RECT)
+	_flash_tex = _make_flash_texture()
 
 ## 绑定对局数据源；HUD 每帧从它取数，自己不存副本。
 func bind(match_state: DuelMatch) -> void:
@@ -71,8 +76,27 @@ func _draw_hurt_flash() -> void:
 	var ratio := _flash.tick(0.0) # 0–1；_process 已推进，这里只读当前值
 	if ratio <= 0.0:
 		return
-	var alpha := HIT_FLASH_PEAK * ratio
-	draw_rect(Rect2(Vector2.ZERO, size), Color(HIT_FLASH_COLOR.r, HIT_FLASH_COLOR.g, HIT_FLASH_COLOR.b, alpha))
+	# 纹理已含红色与径向 alpha 分布，绘制时只调整体透明度（峰值 × 渐隐比例）。
+	draw_texture_rect(_flash_tex, Rect2(Vector2.ZERO, size), false, Color(1.0, 1.0, 1.0, HIT_FLASH_PEAK * ratio))
+
+## 边缘红晕纹理（ADR-0020）：256² 径向渐变拉伸铺满屏幕——UV 空间从中心到各边中点
+## 等距，故四边红带起点一致；四角 UV 距离更远、更早饱和，天然「四角最浓」。
+func _make_flash_texture() -> GradientTexture2D:
+	var tex := GradientTexture2D.new()
+	tex.width = 256
+	tex.height = 256
+	tex.fill = GradientTexture2D.FILL_RADIAL
+	tex.fill_from = Vector2(0.5, 0.5) # 圆心 = 屏幕中心
+	tex.fill_to = Vector2(0.5, 0.0) # 半径 = 中心到边中点（UV 0.5）
+	var grad := Gradient.new()
+	grad.offsets = PackedFloat32Array([0.0, HIT_FLASH_BAND_START, 1.0])
+	grad.colors = PackedColorArray([
+		Color(HIT_FLASH_COLOR.r, HIT_FLASH_COLOR.g, HIT_FLASH_COLOR.b, 0.0),
+		Color(HIT_FLASH_COLOR.r, HIT_FLASH_COLOR.g, HIT_FLASH_COLOR.b, 0.0),
+		Color(HIT_FLASH_COLOR.r, HIT_FLASH_COLOR.g, HIT_FLASH_COLOR.b, 1.0),
+	])
+	tex.gradient = grad
+	return tex
 
 func _draw_crosshair() -> void:
 	# 淡出只作用于白准星（票 07）：让位给红点镜；命中 X 与数字不受影响。
