@@ -19,6 +19,7 @@ const TRACER_MISS_LEN := 200.0 ## 未命中时曳光弹的固定长度
 const TRACER_WIDTH := 0.4 ## 曳光弹宽度（取自参考实现 tracerWidth）
 const FLASH_RADIUS := 4.0 ## 火光半径（参考实现火光贴图 8u 见方 → 半径 4）
 const FLASH_PEAK_ENERGY := 5.0
+const FLASH_HIDE_THRESHOLD := 0.02 ## 火光体积收敛到此以下直接隐藏（ADR-0021 开镜只留照亮）
 const SPAWN_SPREAD := PI / 2.0 ## 刷新方向的随机扇角（±90°，CONTEXT「刷新」）
 const SPAWN_ATTEMPTS := 12
 const SPAWN_CLEARANCE := 30.0 ## 刷新点与遮挡物的最小余量
@@ -88,6 +89,9 @@ var _radius_log: Array[String] = []
 
 var _fx: Fx
 var _bot_fx: Fx
+## 玩家本帧待播的开火特效（ADR-0021）：物理帧只记命中终点，渲染帧等枪体位姿定稿再播。
+var _pending_player_fx := false
+var _pending_player_impact := Vector3.ZERO
 
 var _shot_audio: AudioStreamPlayer
 var _hit_audio: AudioStreamPlayer
@@ -104,6 +108,8 @@ func _ready() -> void:
 	_build_fx()
 	_build_audio()
 	player.shot_fired.connect(_on_shot_fired)
+	# 玩家开火特效延迟到 viewmodel 位姿定稿（pose_applied）后采样（ADR-0021）。
+	player.viewmodel.pose_applied.connect(_sync_player_fx)
 	settings_panel.opened.connect(_refresh_input)
 	settings_panel.closed.connect(_refresh_input)
 	settings_panel.changed.connect(_apply_settings)
@@ -138,7 +144,7 @@ func _process(delta: float) -> void:
 	hud.set_zoom(player.zoom_p) # 准星淡出随开镜进度（票 07）
 	if _timer_active:
 		_drive_timer(minf(delta, TIMER_DT_CLAMP))
-	_tick_fx(_fx, delta)
+	_tick_fx(_fx, delta, 1.0 - player.zoom_p)
 	_tick_fx(_bot_fx, delta)
 	_tick_hotkeys()
 
@@ -514,7 +520,21 @@ func _on_shot_fired(id: StringName) -> void:
 			hud.flash(HitMarkerTiming.KIND_KILL)
 		else:
 			hud.flash(HitMarkerTiming.KIND_HIT)
-	_play_fx(_fx, player.muzzle_world(), impact)
+	# 特效延后到渲染帧播放（ADR-0021）：物理帧只记命中终点。
+	_pending_player_impact = impact
+	_pending_player_fx = true
+
+## 玩家开火特效的渲染帧落位（ADR-0021）：viewmodel 位姿定稿（后坐恢复已应用）后采样枪口，
+## 特效起点与本帧渲染枪口逐像素重合；火光与光源在存活期内每帧跟随枪口（转身时火光是枪的一部分）。
+## 曳光保持世界锚定（弹道语义），只在落位时采样一次起点。
+func _sync_player_fx() -> void:
+	if _pending_player_fx:
+		_pending_player_fx = false
+		_play_fx(_fx, player.muzzle_world(), _pending_player_impact, 1.0 - player.zoom_p)
+	elif _fx.flash_left > 0.0: # 落位当帧位置已由 _play_fx 写好，无需重复采样
+		var muzzle := player.muzzle_world()
+		_fx.flash.global_position = muzzle
+		_fx.light.global_position = muzzle
 
 # ---- 开火：bot ----
 
@@ -663,11 +683,14 @@ func _make_fx(flash_name: String, light_name: String, tracer_name: String) -> Fx
 	add_child(out.tracer)
 	return out
 
-func _play_fx(fx: Fx, muzzle: Vector3, to: Vector3) -> void:
+## `flash_damp`：火光体积收敛系数（ADR-0021）——玩家按 (1 − 开镜进度) 传入，满开镜时
+## 只留点光源照亮、光斑体积隐藏；bot 走默认 1.0 不收敛。
+func _play_fx(fx: Fx, muzzle: Vector3, to: Vector3, flash_damp := 1.0) -> void:
 	if GameSettings.muzzle_flash_enabled:
 		fx.flash_left = FLASH_LIFE
 		fx.flash.global_position = muzzle
-		fx.flash.visible = true
+		fx.flash.scale = Vector3.ONE * flash_damp
+		fx.flash.visible = flash_damp > FLASH_HIDE_THRESHOLD
 		fx.light.global_position = muzzle
 		fx.light.light_energy = FLASH_PEAK_ENERGY
 	if GameSettings.tracer_enabled:
@@ -683,11 +706,14 @@ func _play_fx(fx: Fx, muzzle: Vector3, to: Vector3) -> void:
 			fx.tracer.look_at(fx.tracer.global_position + dir, up)
 			fx.tracer.visible = true
 
-func _tick_fx(fx: Fx, delta: float) -> void:
+func _tick_fx(fx: Fx, delta: float, flash_damp := 1.0) -> void:
 	if fx.flash_left > 0.0:
 		fx.flash_left -= delta
 		if fx.flash_left > 0.0:
 			fx.light.light_energy = FLASH_PEAK_ENERGY * (fx.flash_left / FLASH_LIFE)
+			# 火光体积逐帧重套收敛系数（ADR-0021）：存活期内开镜进度变化也跟着收敛。
+			fx.flash.scale = Vector3.ONE * flash_damp
+			fx.flash.visible = flash_damp > FLASH_HIDE_THRESHOLD
 		else:
 			fx.flash.visible = false
 			fx.light.light_energy = 0.0

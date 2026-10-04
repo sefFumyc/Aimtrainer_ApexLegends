@@ -204,8 +204,9 @@ func _build_video_page(page: VBoxContainer) -> void:
 	quality.item_selected.connect(_on_quality)
 	page.add_child(_row("画面质量", quality))
 
-## 「后坐力强度」分页（票 08）：四通道倍率滑条平铺，倍率量纲 0–2、步进 0.01、默认 1.0、
-## 两位小数；0 = 关掉该通道抖动。个人手感偏好，随 GameSettings 即改即存、不进预设。
+## 「后坐力强度」分页（票 08）：四通道倍率滑条平铺，倍率量纲 0–2、步进 0.01、
+## 两位小数；0 = 关掉该通道抖动。出厂默认即玩家实测定稿手感。个人手感偏好，
+## 随 GameSettings 即改即存、不进预设。
 func _build_recoil_page(page: VBoxContainer) -> void:
 	var lo: float = GameSettings.RECOIL_MULT_MIN
 	var hi: float = GameSettings.RECOIL_MULT_MAX
@@ -216,7 +217,7 @@ func _build_recoil_page(page: VBoxContainer) -> void:
 
 	var hint := Label.new()
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	hint.text = "枪械抖动 = 枪模后坐与上抬的幅度倍率；相机抖动 = 视角踢动与水平甩动的幅度倍率。1.0 为默认手感，0 为完全关闭；对下一发立即生效。"
+	hint.text = "枪械抖动 = 枪模后坐与上抬的幅度倍率；相机抖动 = 视角踢动与水平甩动的幅度倍率。0 为完全关闭，出厂默认即实测定稿手感；对下一发立即生效。"
 	page.add_child(hint)
 
 func _build_timer_page(page: VBoxContainer) -> void:

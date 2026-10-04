@@ -12,6 +12,10 @@
 class_name Viewmodel
 extends SubViewportContainer
 
+## 本帧枪体位姿已定稿（`_process` 应用后坐恢复并刷新 rig 之后）。
+## 开火特效按此刻的枪口采样，起点与本帧渲染枪口逐像素重合（ADR-0021）。
+signal pose_applied
+
 ## 武器层（`VisualInstance3D.layers` 的第 2 位）：只被武器相机看见。
 const WEAPON_LAYER := 2
 
@@ -122,6 +126,7 @@ func _process(delta: float) -> void:
 	_kick_pos = lerpf(_kick_pos, 0.0, k)
 	_kick_pitch = lerpf(_kick_pitch, 0.0, k)
 	_apply_rig()
+	pose_applied.emit()
 
 ## 挂点位姿 = 开镜基准 + 后坐偏移（后坐沿 +Z 朝相机、上抬绕 X）。
 ## 开镜枪体行为按武器分档（票 08，CONTEXT「视觉后坐力」）：步枪的**上抬角**随开镜进度

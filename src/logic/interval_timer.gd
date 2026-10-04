@@ -17,13 +17,13 @@ enum Phase { OFF, PREPARE, PLAY, REST }
 enum Event { NONE, SECOND, PREPARE_END, PLAY_END, REST_END }
 
 const PREPARE_SECONDS := 5
-const PLAY_MIN := 1 ## 每段游玩秒数边界（1–600，默认 60）
+const PLAY_MIN := 1 ## 每段游玩秒数边界（1–600；出厂默认见 GameSettings，此处为纯逻辑回落值）
 const PLAY_MAX := 600
 const PLAY_DEFAULT := 60
-const REST_MIN := 1 ## 每段休息秒数边界（1–300，默认 20）
+const REST_MIN := 1 ## 每段休息秒数边界（1–300；同上）
 const REST_MAX := 300
 const REST_DEFAULT := 20
-const REPEAT_MIN := 1 ## 重复次数（游玩段数）边界（1–99，默认 4）
+const REPEAT_MIN := 1 ## 重复次数（游玩段数）边界（1–99；同上）
 const REPEAT_MAX := 99
 const REPEAT_DEFAULT := 4
 

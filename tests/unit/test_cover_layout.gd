@@ -25,7 +25,7 @@ func test_covers_stay_inside_sampling_band() -> void:
 		assert_gt(r, 0.0, "不会落在圆心上")
 
 func test_covers_avoid_spawn_points() -> void:
-	# 玩家出生点在原点，靶刷新点在玩家前方 target_range 处（默认 120）
+	# 玩家出生点在原点，靶刷新点在玩家前方 target_range 处（出厂默认 400；此处取 120 只是测试固定值）
 	var avoid: Array = [Vector2.ZERO, Vector2(0.0, -120.0)]
 	var clearance := CoverLayout.DEFAULT_CLEARANCE
 	for c in CoverLayout.generate(CoverLayout.Layout.DENSE, RADIUS, avoid, clearance):

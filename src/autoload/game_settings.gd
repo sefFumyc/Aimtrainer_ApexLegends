@@ -17,11 +17,11 @@ enum Quality { LOW, MEDIUM }
 
 ## 鼠标 / 手柄灵敏度都是「无量纲倍率」（票 05 把鼠标从 rad/px 改成倍率——CONTEXT「灵敏度」
 ## 对鼠标本就是乘数定义，属修正不算偏离）：鼠标乘基准 `InputSensitivity.MOUSE_LOOK_BASE`（rad/px），
-## 手柄乘 `Player.GAMEPAD_LOOK_BASE`（rad/s）。区间与默认值沿用参考实现 settings.ts 的
-## SENSITIVITY_MIN/MAX/DEFAULT。
+## 手柄乘 `Player.GAMEPAD_LOOK_BASE`（rad/s）。区间沿用参考实现 settings.ts 的
+## SENSITIVITY_MIN/MAX；出厂默认即玩家实测定稿手感（鼠标 1.0 / 手柄 1.3）。
 const GAMEPAD_SENSITIVITY_MIN := 0.2
 const GAMEPAD_SENSITIVITY_MAX := 5.0
-const GAMEPAD_SENSITIVITY_DEFAULT := 1.0
+const GAMEPAD_SENSITIVITY_DEFAULT := 1.3
 
 ## 三档「模式权重」的取值边界（「模式权重」要求 0–1、步进 0.05）。
 const WEIGHT_MIN := 0.0
@@ -40,10 +40,10 @@ const RECOIL_MULT_MAX := 2.0
 
 ## 鼠标灵敏度：对基准 rad/px 的无量纲倍率（票 05 改量纲；换算与迁移见 `InputSensitivity`）。
 var mouse_sensitivity := InputSensitivity.MOUSE_SENSITIVITY_DEFAULT
-## 手柄灵敏度（右摇杆 → 角速度的无量纲倍率，默认 1.0 ⇒ 满推 2.5 rad/s，与鼠标分开设定）。
+## 手柄灵敏度（右摇杆 → 角速度的无量纲倍率，默认 1.3 ⇒ 满推 3.25 rad/s，与鼠标分开设定）。
 var gamepad_sensitivity := GAMEPAD_SENSITIVITY_DEFAULT
-## 开镜灵敏度倍率（沿用参考实现 ADR-0021 的内置默认值）。
-var ads_sens_mult := 0.751654
+## 开镜灵敏度倍率（出厂默认 ×0.5，玩家实测定稿）。
+var ads_sens_mult := 0.5
 ## 开关项。
 var muzzle_flash_enabled := true
 var tracer_enabled := true
@@ -51,64 +51,66 @@ var hit_marker_enabled := true
 ## 「受击红屏」（ADR-0019）：玩家被 bot 命中时全屏泛红渐隐的开关，与「命中提示」对偶。
 var hit_flash_enabled := true
 ## 「后坐力强度」（票 08，CONTEXT）：枪械抖动（枪体 kick）与相机抖动（相机踢）按武器
-## 分档的倍率，默认 1.0 = 定稿手感原样、0 = 关掉该通道。个人手感偏好，不进预设 19 项。
-var recoil_gun_rifle := 1.0
-var recoil_gun_pistol := 1.0
-var recoil_cam_rifle := 1.0
-var recoil_cam_pistol := 1.0
+## 分档的倍率，出厂默认即玩家实测定稿手感（步枪/手枪 × 枪械/相机），0 = 关掉该通道。
+## 个人手感偏好，不进预设 23 项。
+var recoil_gun_rifle := 1.4
+var recoil_gun_pistol := 2.0
+var recoil_cam_rifle := 0.72
+var recoil_cam_pistol := 2.0
 ## 「画面质量」两档（默认中）。
 var graphics_quality: Quality = Quality.MEDIUM
-## 靶的「体型半径」（4–60，默认 8）。
-var body_radius := Physique.BODY_RADIUS_DEFAULT
-## 「目标距离」（40–800，默认 120）：bot 与玩家的理想平面距离，也是「刷新」的生成距离。
-var target_range := 120.0
+## 靶的「体型半径」（4–60，默认 12）。
+var body_radius := 12.0
+## 「目标距离」（40–800，默认 400）：bot 与玩家的理想平面距离，也是「刷新」的生成距离。
+var target_range := 400.0
 ## 「场地布局」。
-var arena_layout: Layout = Layout.SPARSE
+var arena_layout: Layout = Layout.DENSE
 
-## 「开火开关」（默认关）：关掉时 bot 只是移动靶，不造成任何伤害。
-var bot_fire_enabled := false
-## 「命中率」（0–100，默认 68）：bot 每发开火掷骰命中玩家的概率。
-var bot_hit_rate := 68
+## 「开火开关」（默认开）：关掉时 bot 只是移动靶，不造成任何伤害。
+var bot_fire_enabled := true
+## 「命中率」（0–100，默认 50）：bot 每发开火掷骰命中玩家的概率。
+var bot_hit_rate := 50
 ## 「bot 开镜」（默认关）：只体现为移速封顶降到开镜档。
 var bot_ads_enabled := false
-## 「模式权重」三档（长 / 中 / 快，默认 0.3 / 0.4 / 0.3）：按总和归一化，不要求和为 1。
-var bot_weight_long := 0.3
-var bot_weight_mid := 0.4
+## 「模式权重」三档（长 / 中 / 快，默认 0.5 / 0.3 / 0.3）：按总和归一化，不要求和为 1。
+var bot_weight_long := 0.5
+var bot_weight_mid := 0.3
 var bot_weight_fast := 0.3
 ## 「模式切换」间隔区间（秒，默认 1.0–1.5）。
 var bot_switch_min := 1.0
 var bot_switch_max := 1.5
-## 「移动模式」（默认「保持距离」）。
-var bot_movement_mode: BotMovement = BotMovement.RANGE
-## 「游走倾向」（0–1，默认 0.5）：变向时混入「前后分量」的概率。
-var bot_wander := 0.5
-## 「进攻倾向」/「撤退倾向」（0–1，默认 0.5）：混入的那一份选 W / S 的加权比例。
+## 「移动模式」（默认「动态游走」）。
+var bot_movement_mode: BotMovement = BotMovement.WANDER
+## 「游走倾向」（0–1，默认 0.45）：变向时混入「前后分量」的概率。
+var bot_wander := 0.45
+## 「进攻倾向」/「撤退倾向」（0–1，默认 0.5 / 0.3）：混入的那一份选 W / S 的加权比例。
 var bot_aggression := 0.5
-var bot_retreat := 0.5
-## 「走廊」半宽（0–300，默认 25）：动态游走时允许的距离波动幅度。
-var bot_range_amp := 25.0
-## 「躲避概率」（0–1）：连发（步枪）默认 0.1、单发（手枪）默认 0.4。
-var bot_dodge_auto := 0.1
-var bot_dodge_semi := 0.4
-## 「最短躲避时间」（0–1.0 秒，默认 0.15，0 = 关闭）：只约束躲避。
-var bot_dodge_min_time := 0.15
+var bot_retreat := 0.3
+## 「走廊」半宽（0–300，默认 100）：动态游走时允许的距离波动幅度。
+var bot_range_amp := 100.0
+## 「躲避概率」（0–1）：连发（步枪）默认 0.15、单发（手枪）默认 0.3。
+var bot_dodge_auto := 0.15
+var bot_dodge_semi := 0.3
+## 「最短躲避时间」（0–1.0 秒，默认 0.1，0 = 关闭）：只约束躲避。
+var bot_dodge_min_time := 0.1
 
-## 「bot 滑铲」（票 09 / ADR-0016）：攻击滑铲与重生滑铲两个开关 + 铲跳开关与概率。
-## 任一滑铲开启时「bot 常驻开镜」互锁关闭（开镜封速 130 < 滑铲门槛 200，同时开会废掉滑铲）。
-var bot_attack_slide_enabled := false
-var bot_respawn_slide_enabled := false
-var bot_slide_jump_enabled := false
-var bot_slide_jump_prob := 0.3
+## 「bot 滑铲」（票 09 / ADR-0016）：攻击滑铲与重生滑铲两个开关 + 铲跳开关与概率
+## （出厂默认全开、概率 0.5，玩家实测定稿）。
+## 任一滑铲开关开启时「bot 常驻开镜」互锁关闭（开镜封速 130 < 滑铲门槛 200，同时开会废掉滑铲）。
+var bot_attack_slide_enabled := true
+var bot_respawn_slide_enabled := true
+var bot_slide_jump_enabled := true
+var bot_slide_jump_prob := 0.5
 ## 「吸血」（默认关）：命中方按本次伤害回血，封顶 600。
 var lifesteal_enabled := false
 ## 「间隔计时器」（默认关）：启用后主菜单「开始」进入计时会话。
 var timer_enabled := false
-## 「自动调径」（默认关；前置条件 = 计时器勾选）：每游玩段按准确率调整体型半径。
-var auto_adjust_radius := false
-## 计时会话参数：每段游玩秒数 / 每段休息秒数 / 重复次数。
-var timer_play_seconds := IntervalTimer.PLAY_DEFAULT
-var timer_rest_seconds := IntervalTimer.REST_DEFAULT
-var timer_repeat := IntervalTimer.REPEAT_DEFAULT
+## 「自动调径」（默认开；前置条件 = 计时器勾选）：每游玩段按准确率调整体型半径。
+var auto_adjust_radius := true
+## 计时会话参数：每段游玩秒数 / 每段休息秒数 / 重复次数（出厂默认 40 / 40 / 8，玩家实测定稿）。
+var timer_play_seconds := 40
+var timer_rest_seconds := 40
+var timer_repeat := 8
 
 ## 命名预设表（独立于全局设置持久化；「不选预设」= 全局设置本身）。
 var presets := PresetStore.new()

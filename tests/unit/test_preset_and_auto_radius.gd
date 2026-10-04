@@ -77,7 +77,7 @@ func test_from_dict_fills_missing_and_skips_corrupt() -> void:
 	var old := ps.capture("老预设")
 	assert_almost_eq(old["body_radius"], 20.0, 1e-9)
 	assert_almost_eq(old["bot_aggression"], 0.5, 1e-9, "缺项按出厂默认补齐")
-	assert_eq(old["bot_weight_mid"], 0.4)
+	assert_eq(old["bot_weight_mid"], 0.3)
 	assert_eq(ps.active(), "老预设")
 
 	ps.from_dict({"presets": {}, "active": "幽灵"})

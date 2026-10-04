@@ -78,10 +78,14 @@ func _physics_process(delta: float) -> void:
 	_tick_recoil(delta)
 	if input_enabled:
 		_tick_look(delta)
-		_tick_weapon(delta)
 	_tick_slide_cam(delta)
 	_tick_zoom(delta)
 	_tick_move(delta)
+	# 开火最后结算（ADR-0021）：相机位姿（_tick_move/_tick_zoom）先更新，
+	# 开火瞬间采样的眼位/枪口才是本帧渲染位姿，特效不再滞后一帧。
+	# 后坐踢动因此下一物理帧才上屏（≤16ms，不可感知）。
+	if input_enabled:
+		_tick_weapon(delta)
 
 # ---- 视角 ----
 

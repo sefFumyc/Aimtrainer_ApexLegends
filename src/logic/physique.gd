@@ -16,7 +16,7 @@ const HEAD_CENTER_Y := 66.0
 const EYE_HEIGHT := 66.0 ## 玩家视线高度（与 bot 头心平齐）
 const TOTAL_HEIGHT := 72.0
 
-const BODY_RADIUS_DEFAULT := 8.0 ## 「体型半径」设置项默认值
+const BODY_RADIUS_DEFAULT := 8.0 ## 「体型半径」归一基准：半径 8 = 中性体型不缩放（设置出厂默认 12 见 GameSettings）
 const BODY_RADIUS_MIN := 4.0
 const BODY_RADIUS_MAX := 60.0
 
