@@ -232,9 +232,21 @@ func _tick_weapon(delta: float) -> void:
 		_add_recoil()
 		shot_fired.emit(weapon)
 
-## 当前武器枪口的世界坐标（火光与曳光弹起点）。
+## 当前武器枪口的世界坐标（火光与曳光弹起点，ADR-0021）。
+## 二轮修订两件事：
+## ① 起点在**枪管轴线**上——viewmodel 的 Muzzle 标记随 rig 位姿逐帧定稿（含后坐 kick）；
+## ② **FOV 差补偿**——开镜/滑铲只缩主相机 FOV，武器相机恒定（ADR-0008 解耦的代价），
+##    同一个 3D 点在两个世界投影到不同屏幕位置。换算是纯数学，抽在纯逻辑类
+##    `MuzzleReproject`（GUT 可测），这里只负责取相机与枪口点；两相机 FOV 相等时
+##    数学上退化为恒等，腰射/开镜/滑铲全状态起点与所见枪口逐像素重合。
 func muzzle_world() -> Vector3:
-	return viewmodel.muzzle_world()
+	var p := viewmodel.muzzle_world()
+	var wcam := viewmodel.weapon_camera
+	return MuzzleReproject.reproject(
+		p, wcam.global_transform, wcam.fov,
+		camera.global_transform, camera.fov,
+		wcam.get_viewport().get_visible_rect().size.aspect()
+	)
 
 ## 玩家眼位（射线起点）。
 func eye_position() -> Vector3:

@@ -29,12 +29,18 @@ const PROC_SIGHT_HEIGHT := 2.6
 ## 满开镜时武器挂点相对相机的横向/纵深位置（x 居中、向前推远到不糊脸）。
 const ADS_Z := -8.0
 
-## 枪口在武器挂点本地坐标 = 拟合后的枪管前端（参考实现 ADR-0022：步枪 (0,0,-25)）。
+## 枪口在武器挂点本地坐标 = 拟合后的枪管前端。模型枪改用 **Muzzle 标记**（枪管轴线，
+## ADR-0021 二轮），这两个常量只作程序化兜底枪的口径（兜底枪管就在 y = 0）。
 const RIFLE_MUZZLE_LOCAL := Vector3(0.0, 0.0, -25.0)
 const PISTOL_MUZZLE_LOCAL := Vector3(0.0, 0.0, -7.5)
 ## 两把枪拟合后的总长（枪口端到握把端）。
 const RIFLE_LENGTH := 25.0
 const PISTOL_LENGTH := 7.5
+## 枪管高度系数（ADR-0021 二轮，截图探针两轮定稿）：Muzzle 标记 y = −拟合高度 × 系数。
+## 起点 = 枪管轴线（枪口孔位）而非枪体顶面前角——火光是大球看不出来，曳光细线对起点
+## 高度敏感（实测从「枪口上面」出来）。
+const RIFLE_BORE_FRAC := 0.36
+const PISTOL_BORE_FRAC := 0.34
 
 ## Kenney Blaster Kit（CC0）模型路径；文件不存在时回落到程序化几何。
 const RIFLE_MODEL := "res://assets/third_party/kenney_blaster-kit/rifle/blaster-d.glb"
@@ -62,6 +68,8 @@ var _zoom := 0.0
 ## 每把枪的红点镜轴高度（票 06）：两把枪镜高不同，按武器查表——
 ## 满开镜时挂点 y = -镜高，红点正落准星轴。程序化兜底枪共用 PROC_SIGHT_HEIGHT。
 var _sight_heights := {}
+## 每把枪的枪口标记（枪管轴线，ADR-0021 二轮）：程序化兜底枪不入表，走本地常量口径。
+var _muzzle_markers := {}
 ## 开镜基准位姿（`apply_zoom` 算好存在这里，`_apply_rig` 把后坐力叠上去）。
 var _base_pos := Vector3.ZERO
 var _base_rot := Vector3.ZERO
@@ -139,7 +147,11 @@ func _apply_rig() -> void:
 	rig.rotation = _base_rot + Vector3(_kick_pitch * pitch_damp, 0.0, 0.0)
 
 ## 当前武器枪口的世界坐标（火光与曳光弹的起点）。
+## 模型枪 = Muzzle 标记（枪管轴线，ADR-0021 二轮）；程序化兜底枪 = 挂点本地 (0,0,−len)。
 func muzzle_world() -> Vector3:
+	var marker: Node3D = _muzzle_markers.get(_weapon)
+	if marker != null:
+		return marker.global_position
 	var local := RIFLE_MUZZLE_LOCAL if Weapon.is_rifle(_weapon) else PISTOL_MUZZLE_LOCAL
 	return rig.to_global(local)
 
@@ -147,12 +159,14 @@ func _build_weapon(node_name: String, id: StringName) -> Node3D:
 	var root := Node3D.new()
 	root.name = node_name
 	var rifle := Weapon.is_rifle(id)
+	var length := RIFLE_LENGTH if rifle else PISTOL_LENGTH
 	var loaded := _try_load_model(RIFLE_MODEL if rifle else PISTOL_MODEL)
 	if loaded != null:
-		root.add_child(_fit_model(loaded, RIFLE_LENGTH if rifle else PISTOL_LENGTH))
+		root.add_child(_fit_model(loaded, length, RIFLE_BORE_FRAC if rifle else PISTOL_BORE_FRAC))
+		_muzzle_markers[id] = root.get_node("Model/Muzzle")
 		# 1x 红点镜骑在枪顶（票 06）：红点即瞄准基线——返回值按枪记录，满开镜时
 		# `_base_pos.y = -镜高` 让红点正落准星轴，与准星重合、视野无遮挡。
-		_sight_heights[id] = _add_red_dot(root, RIFLE_LENGTH if rifle else PISTOL_LENGTH)
+		_sight_heights[id] = _add_red_dot(root, length)
 	else:
 		_build_procedural(root, id)
 	return root
@@ -190,7 +204,7 @@ func _add_red_dot(root: Node3D, length: float) -> float:
 ## 先绕 Y 转 180° 让枪口朝 −Z 与挂点同向（票 06 修正拿反）；再缩放到约定总长、
 ## 顶面压到 y = 0（准镜轴）、枪托端 → z = 0、枪口端 → z = −length、左右居中。
 ## 全部由模型自身的包围盒算出，不含手填数字。
-func _fit_model(model: Node3D, length: float) -> Node3D:
+func _fit_model(model: Node3D, length: float, bore_frac: float) -> Node3D:
 	model.rotation.y = PI ## 修正枪口朝向（见上）
 	var box := _model_aabb(model)
 	if box.size.z <= 0.0:
@@ -206,6 +220,20 @@ func _fit_model(model: Node3D, length: float) -> Node3D:
 		-length - s * box.position.z # 枪托端 → z = 0、枪口端 → z = −length
 	)
 	holder.add_child(model)
+	# 枪管轴线标记（ADR-0021 二轮）：火光/曳光的起点 = 枪口孔位。坐标与 box 同在
+	# **holder 本地空间**（box 不含 holder 自身的缩放与偏移）：
+	# z = box.position.z——模型已转 180°、枪口朝 −Z，枪口端面是 min z（holder.position.z
+	# 恰好把它映射到 −length）；y = 顶面 hi.y 往下 frac×高（holder 把顶面映射到 y=0，
+	# 化简后 rig 空间恰为 (0, −拟合高×frac, −length)，与探针定稿口径一致）；
+	# x = 模型自身中心平面（与 holder.position.x 抵消 → rig x=0）。
+	var muzzle := Node3D.new()
+	muzzle.name = "Muzzle"
+	muzzle.position = Vector3(
+		(box.position.x + hi.x) * 0.5,
+		hi.y - box.size.y * bore_frac,
+		box.position.z
+	)
+	holder.add_child(muzzle)
 	return holder
 
 ## 模型在其父空间里的包围盒（递归累加各网格的 AABB）。

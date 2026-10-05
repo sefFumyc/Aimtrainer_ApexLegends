@@ -107,6 +107,9 @@ var _gun: Node3D
 var _gun_bone := -1 ## 枪对齐的手骨索引
 var _gun_len_scale := 1.0 ## 枪的世界级缩放（最长边归一到 WEAPON_LENGTH）
 var _skeleton: Skeleton3D ## Knight 骨架（_attach_weapon 缓存，_sync_gun 每帧读手骨用）
+## 枪口标记（枪管轴线，ADR-0021 二轮）：挂在枪下随 `_sync_gun` 的全局变换逐帧跟随，
+## `muzzle_world_visual()` 优先读它；模型缺失时为 null，回落到地面 + MUZZLE_HEIGHT 口径。
+var _gun_muzzle: Node3D
 ## 姿势混合（纯逻辑）：读实际速度，产出姿势 / 侧偏 / 步频。
 var _pose := PoseBlend.new()
 ## 当前在播的动作名（只在切换时调 `play`，避免每帧重启动画）。
@@ -189,8 +192,12 @@ func hp() -> int:
 func muzzle_world() -> Vector3:
 	return global_position + Vector3(0.0, MUZZLE_HEIGHT, 0.0)
 
-## 曳光 / 火光等**纯视觉**特效的枪口起点：铲跳升空时跟着抬（ADR-0018）。
+## 曳光 / 火光等**纯视觉**特效的枪口起点（ADR-0021 二轮）：优先读枪上的 Muzzle 标记
+## （枪管轴线，随 `_sync_gun` 逐帧跟随——走动摆手 / 铲跳升空所见即所发）；模型缺失时
+## 回落到地面 + MUZZLE_HEIGHT + 跳跃高度的旧口径。视线判定口径（`muzzle_world`）不变。
 func muzzle_world_visual() -> Vector3:
+	if _gun_muzzle != null:
+		return _gun_muzzle.global_position
 	return muzzle_world() + Vector3(0.0, ai.sim.jump_height(), 0.0)
 
 ## 命中体节点：开火射线打到的是它（不是本节点），调用方用它来判断「命中的是不是这个靶」。
@@ -442,6 +449,19 @@ func _attach_weapon(skeleton: Skeleton3D) -> void:
 	_gun = gun
 	_gun_bone = skeleton.find_bone(WEAPON_BONE)
 	_skeleton = skeleton
+	# 枪口标记（ADR-0021 二轮）：此刻 gun 本地变换还是恒等，box 即**原始模型空间**——
+	# 标记钉在枪网格最前端（+Z 端是枪口，票 06 探针实测）的枪管轴线上，高度系数与玩家
+	# 第一人称共用同一探针定稿值（blaster-d 同款资产，Viewmodel.RIFLE_BORE_FRAC），随
+	# `_sync_gun` 的全局变换（含 34.88× 缩放）逐帧跟随：所见即所发。
+	var muzzle := Node3D.new()
+	muzzle.name = "Muzzle"
+	muzzle.position = Vector3(
+		(box.position.x + box.end.x) * 0.5,
+		box.end.y - box.size.y * Viewmodel.RIFLE_BORE_FRAC,
+		box.end.z
+	)
+	gun.add_child(muzzle)
+	_gun_muzzle = muzzle
 	# 枪直接挂 Target 根下：全局变换由 _sync_gun 每帧写，绕开骨链的非均匀缩放
 	add_child(gun)
 	_gun_len_scale = WEAPON_LENGTH / longest # 世界级缩放：最长边归一到期望长度
