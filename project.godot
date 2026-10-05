@@ -9,6 +9,10 @@ config_version=5
 config/name="Aim Trainer"
 run/main_scene="res://src/scenes/main.tscn"
 config/features=PackedStringArray("4.7", "Forward Plus")
+; 帧率兜底上限（修复 GPU 占用异常）：vsync 可能被驱动面板/系统层覆盖失效，
+; 实测主菜单曾以 1200–2700 fps 裸奔把 GPU 打满、饿死桌面合成器。240 fps
+; 下单帧 ~0.8ms → GPU 占用封顶 ~25%，任何环境下整机都不卡。
+run/max_fps=240
 
 [autoload]
 
@@ -18,6 +22,9 @@ GameSettings="*res://src/autoload/game_settings.gd"
 
 window/size/viewport_width=1280
 window/size/viewport_height=720
+; 显式声明垂直同步（默认值本就是它）：写出来是为了让「帧率上限靠 vsync、
+; 失效靠 max_fps 兜底」的策略在项目配置里可见，防止后人误删。
+window/vsync/vsync_mode=1
 
 [input]
 
