@@ -14,7 +14,8 @@ enum Stage { MENU, PLAY, TIMER_PREPARE, TIMER_REST, SETTLEMENT }
 
 const FIRE_RANGE := 3000.0 ## 射线最大长度（与相机远裁剪面同量级）
 const FLASH_LIFE := 0.05 ## 枪口火光存活时长（秒，取自参考实现 flashTotal）
-const TRACER_LIFE := 0.1 ## 曳光弹存活时长（秒，取自参考实现 tracerTotal）
+const TRACER_LIFE := 0.1 ## 曳光弹飞行全程时长（秒，取自参考实现 tracerTotal）
+const TRACER_SEG := 12.0 ## 飞行弹段的视觉长度（ADR-0021 五轮：弹丸短亮条，非全长静止线）
 const TRACER_MISS_LEN := 200.0 ## 未命中时曳光弹的固定长度
 const TRACER_WIDTH := 0.4 ## 曳光弹宽度（取自参考实现 tracerWidth）
 const FLASH_RADIUS := 4.0 ## 火光半径（参考实现火光贴图 8u 见方 → 半径 4）
@@ -64,6 +65,16 @@ class Fx:
 	var tracer: MeshInstance3D
 	var flash_left := 0.0
 	var tracer_left := 0.0
+	## 飞行弹段状态（ADR-0021 五轮）：出膛点/弹道方向/全程长在落位帧定死——弹段出膛后
+	## 钉死弹道，不跟枪不跟发射者（物理正确）；存活期由 `_tick_fx` 沿弹道推进、到达即消失。
+	var tracer_from := Vector3.ZERO
+	var tracer_dir := Vector3.FORWARD
+	var tracer_len := 0.0
+	var tracer_seg := 0.0 ## 弹段长度：min(TRACER_SEG, tracer_len)，近距弹道截断
+	## 是否命中 bot（ADR-0021 四轮保留）：true 时弹段终点每帧用 `tracer_to_local`（命中体
+	## 局部坐标）换算回世界——bot 走了弹段追着飞到它身上；false 时沿直线飞到全程终点。
+	var tracer_on_bot := false
+	var tracer_to_local := Vector3.ZERO
 
 @onready var arena: Arena = $Arena
 @onready var player: Player = $Player
@@ -92,6 +103,9 @@ var _bot_fx: Fx
 ## 玩家本帧待播的开火特效（ADR-0021）：物理帧只记命中终点，渲染帧等枪体位姿定稿再播。
 var _pending_player_fx := false
 var _pending_player_impact := Vector3.ZERO
+## 本发是否命中 bot（ADR-0021 四轮）：命中时曳光终点绑命中体（局部坐标跟随），
+## 未命中/遮挡则终点钉世界位置。
+var _pending_player_on_bot := false
 
 var _shot_audio: AudioStreamPlayer
 var _hit_audio: AudioStreamPlayer
@@ -522,16 +536,22 @@ func _on_shot_fired(id: StringName) -> void:
 			hud.flash(HitMarkerTiming.KIND_HIT)
 	# 特效延后到渲染帧播放（ADR-0021）：物理帧只记命中终点。
 	_pending_player_impact = impact
+	_pending_player_on_bot = shot_target != null
 	_pending_player_fx = true
 
 ## 玩家开火特效的渲染帧落位（ADR-0021）：viewmodel 位姿定稿（后坐恢复已应用）后采样枪口，
 ## 特效起点与本帧渲染枪口逐像素重合；火光与光源在存活期内每帧跟随枪口（转身时火光是枪的一部分）。
-## 曳光保持世界锚定（弹道语义），只在落位时采样一次起点。
+## 曳光是飞行弹段（ADR-0021 五轮）：落位帧从枪口发出后钉死弹道，由 `_tick_fx` 统一推进，
+## 这里不做曳光跟随。
 func _sync_player_fx() -> void:
 	if _pending_player_fx:
 		_pending_player_fx = false
-		_play_fx(_fx, player.muzzle_world(), _pending_player_impact, 1.0 - player.zoom_p)
-	elif _fx.flash_left > 0.0: # 落位当帧位置已由 _play_fx 写好，无需重复采样
+		_play_fx(
+			_fx, player.muzzle_world(), _pending_player_impact, 1.0 - player.zoom_p,
+			_pending_player_on_bot
+		)
+		return # 落位当帧位置已由 _play_fx 写好，存活帧才走下面的跟随
+	if _fx.flash_left > 0.0:
 		var muzzle := player.muzzle_world()
 		_fx.flash.global_position = muzzle
 		_fx.light.global_position = muzzle
@@ -540,6 +560,8 @@ func _sync_player_fx() -> void:
 
 ## bot 每发开火的结算：音效 → 枪口火光 → 曳光（bot 枪口 → 玩家当前坐标，纯视觉）→ 命中扣血。
 ## 曳光起点用 `muzzle_world_visual()`：铲跳升空时跟着抬（ADR-0018）；视线判定仍走地面口径。
+## 曳光是飞行弹段（ADR-0021 五轮）：从 bot 枪口发出后钉死弹道，不跟随玩家跑动——
+## 玩家侧与 bot 侧同构，推进统一走 `_tick_fx`。
 func _resolve_bot_shot(hit: bool) -> void:
 	var muzzle := target.muzzle_world_visual()
 	_play_sound(_shot_audio, SHOT_VOLUME, _shot_pitch())
@@ -685,7 +707,9 @@ func _make_fx(flash_name: String, light_name: String, tracer_name: String) -> Fx
 
 ## `flash_damp`：火光体积收敛系数（ADR-0021）——玩家按 (1 − 开镜进度) 传入，满开镜时
 ## 只留点光源照亮、光斑体积隐藏；bot 走默认 1.0 不收敛。
-func _play_fx(fx: Fx, muzzle: Vector3, to: Vector3, flash_damp := 1.0) -> void:
+## `on_bot`（ADR-0021 四轮）：终点是否命中 bot——true 时弹段追着 bot 身上命中点飞
+## （`tracer_to_local` 每帧换算）；false 时沿直线飞到全程终点（未命中/遮挡）。
+func _play_fx(fx: Fx, muzzle: Vector3, to: Vector3, flash_damp := 1.0, on_bot := false) -> void:
 	if GameSettings.muzzle_flash_enabled:
 		fx.flash_left = FLASH_LIFE
 		fx.flash.global_position = muzzle
@@ -694,17 +718,33 @@ func _play_fx(fx: Fx, muzzle: Vector3, to: Vector3, flash_damp := 1.0) -> void:
 		fx.light.global_position = muzzle
 		fx.light.light_energy = FLASH_PEAK_ENERGY
 	if GameSettings.tracer_enabled:
-		var delta := to - muzzle
-		var length := delta.length()
+		var delta_v := to - muzzle
+		var length := delta_v.length()
 		if length > 0.001:
 			fx.tracer_left = TRACER_LIFE
-			var dir := delta / length
-			# 长度写进网格本体（避免节点缩放在旋转基上产生歧义）；朝向交给 look_at，它把本地 −Z 对准终点
-			(fx.tracer.mesh as BoxMesh).size = Vector3(TRACER_WIDTH, TRACER_WIDTH, length)
-			fx.tracer.global_position = muzzle + dir * (length * 0.5)
-			var up := Vector3.UP if absf(dir.y) < 0.99 else Vector3.FORWARD
-			fx.tracer.look_at(fx.tracer.global_position + dir, up)
-			fx.tracer.visible = true
+			# 飞行弹段（ADR-0021 五轮）：出膛点/方向/全程长落位帧定死，之后由 _tick_fx 推进
+			fx.tracer_from = muzzle
+			fx.tracer_dir = delta_v / length
+			fx.tracer_len = length
+			fx.tracer_seg = minf(TRACER_SEG, length)
+			fx.tracer_on_bot = on_bot
+			fx.tracer_to_local = target.tracer_hit_local(to) if on_bot else Vector3.ZERO
+			_place_tracer_seg(fx, 0.0)
+
+## 弹段落位（ADR-0021 五轮）：`head` = 弹段头端沿弹道的行进距离。发射初期段从枪口伸出
+## （head < 段长时尾端钉在枪口、段长 = head），之后整段匀速推进，头端到达即整段消失。
+func _place_tracer_seg(fx: Fx, head: float) -> void:
+	var seg := minf(fx.tracer_seg, head)
+	if seg <= 0.001:
+		return
+	var center := fx.tracer_from + fx.tracer_dir * (head - seg * 0.5)
+	fx.tracer.global_position = center
+	# 朝向交给 look_at，它把本地 −Z 对准弹道远端；up 在弹道接近竖直时换轴防共线
+	var up := Vector3.UP if absf(fx.tracer_dir.y) < 0.99 else Vector3.FORWARD
+	fx.tracer.look_at(center + fx.tracer_dir, up)
+	# 长度写进网格本体（避免节点缩放在旋转基上产生歧义）
+	(fx.tracer.mesh as BoxMesh).size = Vector3(TRACER_WIDTH, TRACER_WIDTH, seg)
+	fx.tracer.visible = true
 
 func _tick_fx(fx: Fx, delta: float, flash_damp := 1.0) -> void:
 	if fx.flash_left > 0.0:
@@ -717,7 +757,18 @@ func _tick_fx(fx: Fx, delta: float, flash_damp := 1.0) -> void:
 		else:
 			fx.flash.visible = false
 			fx.light.light_energy = 0.0
+	# 飞行弹段推进（ADR-0021 五轮）：head 按「已飞行时间比例 × 当前全程长」线性推进，
+	# 头端到达（tracer_left 归零）即整段消失。命中 bot 时终点每帧换算——弹段追着命中点飞，
+	# bot 死亡/撤下（visible=false）后方向冻结为直线（0.1s 寿命内不会撞上 respawn 跳位）。
 	if fx.tracer_left > 0.0:
-		fx.tracer_left -= delta
+		fx.tracer_left = maxf(fx.tracer_left - delta, 0.0)
 		if fx.tracer_left <= 0.0:
 			fx.tracer.visible = false
+		else:
+			if fx.tracer_on_bot and target.visible:
+				var hit_to := target.tracer_hit_world(fx.tracer_to_local)
+				fx.tracer_dir = (hit_to - fx.tracer_from).normalized()
+				fx.tracer_len = (hit_to - fx.tracer_from).length()
+				fx.tracer_seg = minf(TRACER_SEG, fx.tracer_len)
+			var head := fx.tracer_len * (1.0 - fx.tracer_left / TRACER_LIFE)
+			_place_tracer_seg(fx, minf(head, fx.tracer_len))

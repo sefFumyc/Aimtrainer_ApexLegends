@@ -200,6 +200,15 @@ func muzzle_world_visual() -> Vector3:
 		return _gun_muzzle.global_position
 	return muzzle_world() + Vector3(0.0, ai.sim.jump_height(), 0.0)
 
+## 曳光命中点换算（ADR-0021 四轮）：命中时把世界命中点转存为**命中体局部坐标**，
+## 存活期每帧用 `tracer_hit_world` 换算回世界——bot 平移/转向/躺姿压深（SLIDE_SINK）/
+## 铲跳升空（lift）全部跟随，线远端始终贴在 bot 身上被打中的那个点。
+func tracer_hit_local(world: Vector3) -> Vector3:
+	return _hit_body.global_transform.affine_inverse() * world
+
+func tracer_hit_world(local: Vector3) -> Vector3:
+	return _hit_body.to_global(local)
+
 ## 命中体节点：开火射线打到的是它（不是本节点），调用方用它来判断「命中的是不是这个靶」。
 func hit_body() -> CollisionObject3D:
 	return _hit_body
