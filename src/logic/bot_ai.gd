@@ -71,6 +71,9 @@ class Perception:
 	var slide_attack := false ## 「攻击滑铲」开关（视线被挡时触发）
 	var slide_jump := false ## 「铲跳」开关（滑铲中不松蹲跳起晃子弹）
 	var slide_jump_prob := 0.3 ## 「铲跳概率」（每次滑铲独立掷骰）
+	var jump_enabled := false ## 「bot 跳跃」开关（票 11 / ADR-0023）
+	var jump_min := 4.0 ## 「跳跃间隔」下限（秒）
+	var jump_max := 12.0 ## 「跳跃间隔」上限（秒）
 
 var sim := MovementSimulator.new()
 var avoidance: AvoidanceController
@@ -92,6 +95,8 @@ var _slide_jump_at := 0.0 ## 铲跳时刻
 var _slide_cd := 0.0 ## 滑铲结束后的攻击滑铲冷却
 var _slide_dir := Vector2.ZERO ## 本次滑铲的世界方向（起步转身段的目标朝向，ADR-0017）
 var _slide_face_from := 0.0 ## 滑铲起始朝向（起步段从这里插值到滑行方向，ADR-0017）
+var _jump_rng: RandomNumberGenerator ## 跳跃骰独立随机源：不污染开火/滑铲序列（ADR-0023）
+var _jump_wait := -1.0 ## 距下一次跳跃判定的秒数；<0 = 待落窗（spawn 后首帧重抽首跳间隔）
 
 ## `probe` 签名 `(origin: Vector2, dir: Vector2, length: float) -> bool`，可为空（则只做解析边界探测）。
 func _init(rng: RandomNumberGenerator, config: AvoidanceController.Config, probe := Callable()) -> void:
@@ -101,6 +106,9 @@ func _init(rng: RandomNumberGenerator, config: AvoidanceController.Config, probe
 	var avoid_rng := RandomNumberGenerator.new()
 	avoid_rng.seed = rng.seed ^ 0x5F356495
 	avoidance = AvoidanceController.new(avoid_rng, config)
+	# 跳跃骰独立随机源（ADR-0023）：与开火骰、躲避骰都分开——固定种子测试不因新增跳跃而连锁改。
+	_jump_rng = RandomNumberGenerator.new()
+	_jump_rng.seed = rng.seed ^ 0x1B8C9A5F
 
 ## 在指定位置出现：满血、存活、清空开火状态、重抽躲避节奏。
 func spawn(at: Vector2) -> void:
@@ -113,6 +121,7 @@ func spawn(at: Vector2) -> void:
 	_sliding = false
 	_slide_jump = false
 	_slide_cd = 0.0
+	_jump_wait = -1.0
 	avoidance.spawn()
 
 ## 清除攻击锁定与两项计时（玩家重生时调用）：bot 之后重新按视锥计时。
@@ -133,6 +142,7 @@ func update(dt: float, p: Perception) -> Array:
 	# 「bot 滑铲」期间下面由 _slide_face 改写（先转向滑行方向、再按角速度回头，ADR-0017）。
 	sim.set_facing(_player_yaw(pos, p))
 	_slide_cd = maxf(0.0, _slide_cd - dt)
+	var jump_now := _tick_jump(dt, p) # 到点判定先于滑铲分支：信号只在常规路径消费
 	# 「滑铲全程」（ADR-0016 + 0017）：零输入直线滑行、随机时刻铲跳或站起；
 	# 朝向先转向滑行方向再按 360°/s 转回玩家，瞄住（夹角 ≤10°）前开火闸关闭。
 	if _sliding:
@@ -169,6 +179,7 @@ func update(dt: float, p: Perception) -> Array:
 	var ctl := MovementSimulator.MoveControl.new()
 	ctl.right = strafe
 	ctl.fwd = fwd
+	ctl.jump = jump_now # 一帧信号：movement 普通跳分支接管（垂直 286、水平继承、空中照常输入）
 	sim.set_control(ctl)
 	sim.set_zoom(1.0 if p.ads else 0.0) # 常驻开镜只体现为移速封顶，无视觉开镜
 	sim.advance(dt)
@@ -188,6 +199,7 @@ func take_damage(damage: int, p: Perception) -> bool:
 		sim.reset()
 		_sliding = false
 		_slide_jump = false
+		_jump_wait = -1.0
 		_reset_fire()
 		return true
 	_try_dodge(p)
@@ -389,6 +401,30 @@ func _slide_dir_blocked(pos: Vector2, dir: Vector2, length: float) -> bool:
 	if _hits_boundary(pos, dir, length):
 		return true
 	return bool(_probe.call(pos, dir, length)) if _probe.is_valid() else false
+
+# ---- bot 跳跃（票 11 / ADR-0023）----
+
+## 推进「bot 跳跃」计时器，到点判定是否发本帧跳跃信号（一帧即逝，movement 普通跳分支接管）。
+## 门控三件套：非滑铲（滑铲中的跳归铲跳管）、仅地面（空中发 jump 会锁存到落地违跳）、
+## 视线通畅（被挡时跳浪费频率配额）。到点不满足 → 本轮作废、立即重抽下一轮间隔，不排队等待。
+## 开关关闭时计时器冻结（重开后从原值继续倒数）。
+func _tick_jump(dt: float, p: Perception) -> bool:
+	if not p.jump_enabled:
+		return false
+	if _jump_wait < 0.0:
+		_jump_wait = _roll_jump_wait(p) # 「刷新」后的首帧：重抽首跳间隔，本轮不判定
+		return false
+	_jump_wait -= dt
+	if _jump_wait > 0.0:
+		return false
+	_jump_wait = _roll_jump_wait(p) # 跳了或作废都从这里起算下一轮
+	if _sliding or sim.state() == "sliding" or sim.airborne() or not p.line_of_sight:
+		return false
+	return true
+
+## 在「跳跃间隔」窗口内抽下一轮等待秒数（min > max 时归一，防设置手滑）。
+func _roll_jump_wait(p: Perception) -> float:
+	return _jump_rng.randf_range(minf(p.jump_min, p.jump_max), maxf(p.jump_min, p.jump_max))
 
 # ---- 躲避 ----
 

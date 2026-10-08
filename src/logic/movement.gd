@@ -530,6 +530,10 @@ func speed() -> float:
 func vertical_speed() -> float:
 	return _vz_v
 
+## 是否在空中（bot 跳跃门控用，ADR-0023）。
+func airborne() -> bool:
+	return _airborne
+
 ## 相机高度：跳跃高度 + 蹲伏位移（−30 × 蹲进度）。
 func height() -> float:
 	return _height_v + CROUCH_HEIGHT * _crouch_p

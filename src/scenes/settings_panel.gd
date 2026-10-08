@@ -33,6 +33,9 @@ var _slide_attack_check: CheckButton
 var _slide_respawn_check: CheckButton
 var _slide_jump_check: CheckButton
 var _slide_jump_prob_row: HBoxContainer
+var _jump_check: CheckButton
+var _jump_min_slider: HSlider
+var _jump_max_slider: HSlider
 
 ## prop → 控件：切预设后按需回灌数值（`set_value_no_signal` 避免反过来再写一遍）。
 var _controls := {}
@@ -164,6 +167,22 @@ func _build_avoidance_page(page: VBoxContainer) -> void:
 	)
 	page.add_child(_slide_jump_prob_row)
 	_sync_slide_interlock()
+
+	# bot 跳跃（票 11 / ADR-0023）：开关 + 「跳跃间隔」双滑条；下限 0.5 是故意的——
+	# 压进滞空（约 0.72s）以下就是落地即跳的连跳 bot。关闭时两条滑条（含数值框）置灰。
+	_jump_check = _bound_check(GameSettings.bot_jump_enabled, &"bot_jump_enabled", _sync_jump_grey)
+	_jump_min_slider = _bound_slider(
+		GameSettings.JUMP_INTERVAL_MIN, GameSettings.JUMP_INTERVAL_MAX, 0.1,
+		GameSettings.bot_jump_min, &"bot_jump_min"
+	)
+	_jump_max_slider = _bound_slider(
+		GameSettings.JUMP_INTERVAL_MIN, GameSettings.JUMP_INTERVAL_MAX, 0.1,
+		GameSettings.bot_jump_max, &"bot_jump_max"
+	)
+	page.add_child(_row("bot 跳跃", _jump_check))
+	page.add_child(_row("跳跃间隔下限", _jump_min_slider))
+	page.add_child(_row("跳跃间隔上限", _jump_max_slider))
+	_sync_jump_grey()
 
 func _build_video_page(page: VBoxContainer) -> void:
 	page.add_child(
@@ -456,6 +475,7 @@ func _sync_controls() -> void:
 	_hit_rate_row.visible = GameSettings.bot_fire_enabled
 	_auto_radius.disabled = not GameSettings.timer_enabled
 	_sync_slide_interlock()
+	_sync_jump_grey()
 
 ## 滑铲互锁（ADR-0016）：两个滑铲开关都没勾 → 铲跳置灰、概率行隐藏；
 ## 任一滑铲勾上 → 「bot 常驻开镜」置灰并自动取消（开镜封速 130 < 滑铲门槛 200，
@@ -471,6 +491,15 @@ func _sync_slide_interlock(_v: bool = false) -> void:
 	if any and ads_check.button_pressed:
 		ads_check.set_pressed_no_signal(false)
 		GameSettings.write_param(&"bot_ads_enabled", false)
+
+## 「bot 跳跃」置灰（票 11）：开关关闭时两条间隔滑条（含数值框）不可用。
+## `_bound_check` 回调同样会传勾选状态 bool——签名收下（票 09 同款教训）。
+func _sync_jump_grey(_v: bool = false) -> void:
+	var on := GameSettings.bot_jump_enabled
+	_jump_min_slider.disabled = not on
+	_jump_max_slider.disabled = not on
+	(_jump_min_slider.get_meta("value_edit") as LineEdit).editable = on
+	(_jump_max_slider.get_meta("value_edit") as LineEdit).editable = on
 
 func _on_layout(index: int) -> void:
 	_write(&"arena_layout", _layout.get_item_id(index))

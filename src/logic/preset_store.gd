@@ -10,8 +10,8 @@
 class_name PresetStore
 extends RefCounted
 
-## 23 项训练参数（票 09 起）：「目标与 bot」6 项 + 「躲避与移动」13 项 + 「bot 滑铲」4 项。
-## 不含「武器」、灵敏度 / 画面质量 / 计时器 / 场地布局——这些全局共享。
+## 26 项训练参数（票 11 起）：「目标与 bot」6 项 + 「躲避与移动」13 项 + 「bot 滑铲」4 项
+## + 「bot 跳跃」3 项。不含「武器」、灵敏度 / 画面质量 / 计时器 / 场地布局——这些全局共享。
 const FIELDS: Array[String] = [
 	"target_range",
 	"body_radius",
@@ -36,6 +36,9 @@ const FIELDS: Array[String] = [
 	"bot_respawn_slide_enabled",
 	"bot_slide_jump_enabled",
 	"bot_slide_jump_prob",
+	"bot_jump_enabled",
+	"bot_jump_min",
+	"bot_jump_max",
 ]
 
 ## 核心六项：任一缺失即视为损坏预设。
@@ -73,9 +76,12 @@ const DEFAULTS := {
 	"bot_respawn_slide_enabled": true,
 	"bot_slide_jump_enabled": true,
 	"bot_slide_jump_prob": 0.5,
+	"bot_jump_enabled": true,
+	"bot_jump_min": 4.0,
+	"bot_jump_max": 12.0,
 }
 
-## 预设名 → 23 项快照（String 键）。
+## 预设名 → 26 项快照（String 键）。
 var _presets := {}
 ## 当前选中的预设名；空串 = 默认预设（全局设置本身）。
 var _active := ""
@@ -113,7 +119,7 @@ func erase(name: String) -> void:
 func select(name: String) -> void:
 	_active = name if has(name) else ""
 
-## 取某个预设的 23 项快照**副本**（不存在时返回空字典）。
+## 取某个预设的 26 项快照**副本**（不存在时返回空字典）。
 func capture(name: String) -> Dictionary:
 	var preset: Dictionary = _presets.get(name, {})
 	return preset.duplicate()
@@ -141,7 +147,7 @@ func from_dict(data: Dictionary) -> void:
 				_presets[str(name)] = normalized
 	select(str(data.get("active", "")))
 
-## 整理成完整 23 项快照：核心六项缺失返回空字典（损坏），其余缺字段按出厂默认补齐。
+## 整理成完整 26 项快照：核心六项缺失返回空字典（损坏），其余缺字段按出厂默认补齐。
 func _normalize(raw: Variant) -> Dictionary:
 	if not (raw is Dictionary):
 		return {}

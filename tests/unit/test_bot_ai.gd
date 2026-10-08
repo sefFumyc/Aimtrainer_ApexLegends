@@ -530,3 +530,141 @@ func test_slide_firing_gated_until_aimed() -> void:
 			aimed_sliding_shots += shots.size()
 	assert_eq(early_shots, 0, "起步转身段开火闸关闭：零开火")
 	assert_gt(aimed_sliding_shots, 0, "瞄住后滑铲中即开火")
+
+# ---- bot 跳跃（票 11 / ADR-0023）----
+
+## 打开跳跃开关并把间隔窗口压小（快速到点）。
+func jump_perception(lo := 0.05, hi := 0.1) -> BotAi.Perception:
+	var p := perception()
+	p.jump_enabled = true
+	p.jump_min = lo
+	p.jump_max = hi
+	return p
+
+## 跑 seconds 秒，返回 `[离地次数, 离地帧数]`（airborne 上升沿计次）。
+func run_jump_phases(bot: BotAi, p: BotAi.Perception, seconds: float) -> Array:
+	var phases := 0
+	var air_frames := 0
+	var was_air := false
+	var elapsed := 0.0
+	while elapsed < seconds:
+		bot.update(0.01, p)
+		var air := bot.sim.airborne()
+		if air and not was_air:
+			phases += 1
+		air_frames += 1 if air else 0
+		was_air = air
+		elapsed += 0.01
+	return [phases, air_frames]
+
+func test_jump_enabled_fires_and_lands() -> void:
+	var bot := bot_at(Vector2(0.0, -120.0))
+	var result := run_jump_phases(bot, jump_perception(), 3.0)
+	assert_gt(result[0], 0, "开关开着就该跳起来")
+	assert_gt(result[1], 0, "有离地帧")
+	assert_lt(result[0], 8, "滞空约 0.72s：3 秒内到点作废重抽，跳次远少于到点次数")
+	# 连跳节奏下任意采样点大概率恰在空中——关掉开关（计时器冻结）再跑一段，必须回到地面
+	run_jump_phases(bot, jump_perception(999.0, 999.0), 1.5)
+	assert_false(bot.sim.airborne(), "不再到点后落地（不会卡在空中）")
+
+func test_jump_disabled_never_jumps() -> void:
+	var bot := bot_at(Vector2(0.0, -120.0))
+	var p := jump_perception()
+	p.jump_enabled = false
+	var result := run_jump_phases(bot, p, 2.0)
+	assert_eq(result[0], 0, "开关关着不该跳")
+	assert_eq(result[1], 0, "也没有离地帧")
+
+func test_no_rejump_mid_air() -> void:
+	# 固定 0.05s 间隔（滞空约 0.72s 内到点十余次）：首个上升沿后 0.6s 内不得出现第二个
+	# 上升沿——空中重触发或落地即重跳都会把间隔压进 0.6s 以内（单帧信号 + 空中作废的直接观察）。
+	var bot := bot_at(Vector2(0.0, -120.0))
+	var p := jump_perception(0.05, 0.05)
+	var first_at := -1.0
+	var gap := -1.0
+	var was_air := false
+	var elapsed := 0.0
+	while elapsed < 3.0 and gap < 0.0:
+		bot.update(0.01, p)
+		var air := bot.sim.airborne()
+		if air and not was_air:
+			if first_at < 0.0:
+				first_at = elapsed
+			elif elapsed - first_at > 0.6:
+				gap = elapsed - first_at
+			else:
+				gap = -2.0 # 滞空未结束又离地——违例
+				break
+		was_air = air
+		elapsed += 0.01
+	assert_gt(first_at, 0.0, "起跳了")
+	assert_gt(gap, 0.0, "第二次离地发生在滞空结束之后（间隔 >0.6s）")
+
+func test_jump_blocked_at_due_is_discarded_not_queued() -> void:
+	# 固定 1s 间隔：1.0s 到点时视线被挡 → 作废重抽（下一轮整整 1s 后）；
+	# 1.2s 恢复视野——排队语义会在恢复瞬间立刻补跳，作废重抽不该发生。
+	var bot := bot_at(Vector2(0.0, -120.0))
+	var p := jump_perception(1.0, 1.0)
+	p.line_of_sight = false
+	var jumped_while_blocked := false
+	var jumped_right_after_open := false
+	var was_air := false
+	var elapsed := 0.0
+	while elapsed < 2.5:
+		if elapsed >= 1.2:
+			p.line_of_sight = true
+		bot.update(0.01, p)
+		if bot.sim.airborne() and not was_air:
+			if elapsed < 1.2:
+				jumped_while_blocked = true
+			elif elapsed < 1.7: # 作废重抽的下一轮到点在 2.0s 附近
+				jumped_right_after_open = true
+		was_air = bot.sim.airborne()
+		elapsed += 0.01
+	assert_false(jumped_while_blocked, "视线被挡期间不跳")
+	assert_false(jumped_right_after_open, "到点作废不排队：视野恢复不立刻补跳")
+	assert_true(was_air, "下一轮（2.0s 附近）照常起跳")
+
+func test_jump_skips_while_sliding() -> void:
+	var bot := bot_at(Vector2(0.0, -120.0))
+	var p := jump_perception(0.05, 0.1)
+	assert_true(bot._begin_slide(Vector2(1.0, 0.0), false, 0.0), "注入滑铲（ADR-0017 同款豁免）")
+	var saw_sliding := false
+	for i in 30: # 滑铲 0.35–0.9s 才站起：0.3s 内全程滑行，期间多个到点全作废
+		bot.update(0.01, p)
+		saw_sliding = saw_sliding or bot._sliding
+		assert_false(bot.sim.airborne(), "滑铲中不起跳（滑铲中的跳跃归铲跳管）")
+	assert_true(saw_sliding, "前置：确实处于滑铲中")
+
+func test_jump_dice_do_not_disturb_fire_sequence() -> void:
+	# 同种子两台 bot，唯一差别是跳跃开关：开火骰序列必须逐发一致（ADR-0023 随机源隔离）。
+	var a := bot_at(Vector2(0.0, -400.0))
+	var b := bot_at(Vector2(0.0, -400.0))
+	var pa := perception()
+	pa.fire_enabled = true
+	pa.hit_rate = 50
+	pa.line_of_sight = true
+	var pb := perception()
+	pb.fire_enabled = true
+	pb.hit_rate = 50
+	pb.line_of_sight = true
+	pb.jump_enabled = true
+	pb.jump_min = 0.05
+	pb.jump_max = 0.1
+	var seq_a: Array = []
+	var seq_b: Array = []
+	var elapsed := 0.0
+	while elapsed < 5.0:
+		aim_at(pa, a)
+		aim_at(pb, b)
+		for s in a.update(0.01, pa):
+			seq_a.append(s)
+		for s in b.update(0.01, pb):
+			seq_b.append(s)
+		elapsed += 0.01
+	assert_eq(seq_a.size(), seq_b.size(), "开火次数一致")
+	var mismatch := false
+	for i in seq_a.size():
+		if seq_a[i] != seq_b[i]:
+			mismatch = true
+	assert_false(mismatch, "命中/失手序列逐发一致（跳跃骰独立随机源）")

@@ -601,6 +601,9 @@ func _build_perception() -> void:
 	p.slide_attack = GameSettings.bot_attack_slide_enabled
 	p.slide_jump = GameSettings.bot_slide_jump_enabled and GameSettings.bot_slide_any_enabled()
 	p.slide_jump_prob = GameSettings.bot_slide_jump_prob
+	p.jump_enabled = GameSettings.bot_jump_enabled
+	p.jump_min = GameSettings.bot_jump_min
+	p.jump_max = GameSettings.bot_jump_max
 	p.line_of_sight = _bot_has_sight()
 	p.dodge_chance = GameSettings.dodge_chance_for(player.weapon)
 	p.arena_layout = GameSettings.arena_layout
