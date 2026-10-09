@@ -40,11 +40,12 @@ const PISTOL_LENGTH := 7.5
 const BURST_LENGTH := 18.0
 ## 枪管高度系数（ADR-0021 二轮，截图探针两轮定稿）：Muzzle 标记 y = −拟合高度 × 系数。
 ## 起点 = 枪管轴线（枪口孔位）而非枪体顶面前角——火光是大球看不出来，曳光细线对起点
-## 高度敏感（实测从「枪口上面」出来）。冲锋枪系数已随 blaster-g 选型定稿（ADR-0026）：
-## 枪口端面顶点直方图圆环轴 + 渲染探针亮球双重确认，恰好与步枪同值。
+## 高度敏感（实测从「枪口上面」出来）。手枪/冲锋枪两值随朝向勘误（ADR-0026）重校：
+## 原值是对着错误端定的，现按**原始枪口端面**顶点带中心取值（k 套筒上部管口、
+## g 机匣上高位管口），d 的 0.36 与其枪口端面带中心 0.37 吻合不动。游戏内截图终验后微调。
 const RIFLE_BORE_FRAC := 0.36
-const PISTOL_BORE_FRAC := 0.34
-const BURST_BORE_FRAC := 0.36
+const PISTOL_BORE_FRAC := 0.26
+const BURST_BORE_FRAC := 0.18
 
 ## Kenney Blaster Kit（CC0）模型路径；文件不存在时回落到程序化几何。
 const RIFLE_MODEL := "res://assets/third_party/kenney_blaster-kit/rifle/blaster-d.glb"
@@ -188,7 +189,7 @@ func _build_weapon(node_name: String, id: StringName) -> Node3D:
 	var length := _length_of(id)
 	var loaded := _try_load_model(_model_path(id))
 	if loaded != null:
-		root.add_child(_fit_model(loaded, length, _bore_frac_of(id)))
+		root.add_child(_fit_model(loaded, length, _bore_frac_of(id), _model_flip(id)))
 		_muzzle_markers[id] = root.get_node("Model/Muzzle")
 		# 1x 红点镜骑在枪顶（票 06）：红点即瞄准基线——返回值按枪记录，满开镜时
 		# `_base_pos.y = -镜高` 让红点正落准星轴，与准星重合、视野无遮挡。
@@ -225,6 +226,12 @@ func _bore_frac_of(id: StringName) -> float:
 		_:
 			return RIFLE_BORE_FRAC
 
+## 每枪是否需要 180° 翻转（ADR-0026 朝向勘误）：Kenney 模型**不是**统一「原始 +Z 是枪口」——
+## blaster-d 是 +Z，blaster-k/g 是 **−Z**（玩家实测拿反 + 端面顶点探针确认）。
+## 翻转后（或无需翻转时）枪口端都落在 min z，Muzzle 的 z/y 公式两种朝向通用。
+func _model_flip(id: StringName) -> bool:
+	return id != Weapon.PISTOL and id != Weapon.BURST
+
 ## 程序化 1x 红点镜（票 06 定稿样式：无环开框式——两侧细柱 + 顶端红段 + 悬浮红点，
 ## 参照 Apex 1x 红点镜：中间完全开放不挡视野；kit 里没有独立瞄具模型）。
 ## 返回镜轴相对挂点的高度（模型拟合后顶面在 y = 0，镜轴 = 顶面 + 柱高）。
@@ -254,12 +261,14 @@ func _add_red_dot(root: Node3D, length: float) -> float:
 	root.add_child(_sphere("RedDot", length * 0.006, Vector3(0.0, sight_h, z), glow)) ## 红点很小（步 0.15 / 手 0.045），开镜只是个点
 	return sight_h
 
-## 把模型摆进武器挂点空间：Kenney glb 导入后 **+Z 端是枪口**（blaster-d/k 两端端面实测），
-## 先绕 Y 转 180° 让枪口朝 −Z 与挂点同向（票 06 修正拿反）；再缩放到约定总长、
-## 顶面压到 y = 0（准镜轴）、枪托端 → z = 0、枪口端 → z = −length、左右居中。
+## 把模型摆进武器挂点空间：Kenney 模型朝向**不统一**——blaster-d 原始 +Z 是枪口、
+## blaster-k/g 原始 −Z 是枪口（ADR-0026 朝向勘误，玩家实测拿反 + 端面顶点探针确认）。
+## `flip = true` 时先绕 Y 转 180° 让枪口朝 −Z 与挂点同向（票 06 修正拿反的 d 时引入，
+## 当时误以为全套件统一朝向）；k/g 无需翻转。其余同：缩放到约定总长、顶面压到 y = 0
+## （准镜轴）、枪托端 → z = 0、枪口端 → z = −length、左右居中。
 ## 全部由模型自身的包围盒算出，不含手填数字。
-func _fit_model(model: Node3D, length: float, bore_frac: float) -> Node3D:
-	model.rotation.y = PI ## 修正枪口朝向（见上）
+func _fit_model(model: Node3D, length: float, bore_frac: float, flip: bool) -> Node3D:
+	model.rotation.y = PI if flip else 0.0 ## 按枪修正枪口朝向（见上）
 	var box := _model_aabb(model)
 	if box.size.z <= 0.0:
 		return model
@@ -276,7 +285,7 @@ func _fit_model(model: Node3D, length: float, bore_frac: float) -> Node3D:
 	holder.add_child(model)
 	# 枪管轴线标记（ADR-0021 二轮）：火光/曳光的起点 = 枪口孔位。坐标与 box 同在
 	# **holder 本地空间**（box 不含 holder 自身的缩放与偏移）：
-	# z = box.position.z——模型已转 180°、枪口朝 −Z，枪口端面是 min z（holder.position.z
+	# z = box.position.z——经翻转（或原生）枪口都朝 −Z，枪口端面是 min z（holder.position.z
 	# 恰好把它映射到 −length）；y = 顶面 hi.y 往下 frac×高（holder 把顶面映射到 y=0，
 	# 化简后 rig 空间恰为 (0, −拟合高×frac, −length)，与探针定稿口径一致）；
 	# x = 模型自身中心平面（与 holder.position.x 抵消 → rig x=0）。
