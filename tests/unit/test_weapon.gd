@@ -20,15 +20,16 @@ func test_pistol_stats() -> void:
 	assert_false(Weapon.automatic(Weapon.PISTOL), "手枪单发")
 
 ## 注意：CONTEXT.md「爆头」词条写的是「×2 伤害」，但实测数据是步枪 25→35（1.4×）、
-## 手枪 70→110（≈1.571×）——参考实现里 35 是 ADR-0026 从 50（=2×25）再平衡后的值，
+## 手枪 70→110（≈1.571×）——参考实现里 35 是从 50（=2×25）再平衡后的值，
 ## 词条的「×2」是那次再平衡之前的残留。以代码与票面的具体数值为准，此处不加断言。
 func test_headshot_damage_is_higher_than_body() -> void:
 	assert_gt(Weapon.headshot_damage(Weapon.RIFLE), Weapon.body_damage(Weapon.RIFLE))
 	assert_gt(Weapon.headshot_damage(Weapon.PISTOL), Weapon.body_damage(Weapon.PISTOL))
 
-func test_other_weapon_toggles() -> void:
-	assert_eq(Weapon.other(Weapon.RIFLE), Weapon.PISTOL)
-	assert_eq(Weapon.other(Weapon.PISTOL), Weapon.RIFLE)
+func test_next_weapon_cycles_three() -> void:
+	assert_eq(Weapon.next(Weapon.RIFLE), Weapon.PISTOL)
+	assert_eq(Weapon.next(Weapon.PISTOL), Weapon.BURST)
+	assert_eq(Weapon.next(Weapon.BURST), Weapon.RIFLE)
 
 # ---- 步枪连射 ----
 
@@ -93,14 +94,81 @@ func test_pistol_no_buffer_no_fire() -> void:
 	w.press()
 	assert_eq(w.advance(1.0, false), 0, "没缓冲就不补发")
 
+func test_burst_stats() -> void:
+	assert_almost_eq(Weapon.interval(Weapon.BURST), 0.05, 1e-9, "组内弹间隔 50ms")
+	assert_eq(Weapon.body_damage(Weapon.BURST), 20)
+	assert_eq(Weapon.headshot_damage(Weapon.BURST), 30)
+	assert_false(Weapon.automatic(Weapon.BURST), "冲锋枪是点击边沿武器（点一组）")
+	assert_true(Weapon.is_auto_tier(Weapon.BURST), "躲避/收敛归连发压迫档")
+	assert_almost_eq(Weapon.sound_pitch(Weapon.BURST), 1.15, 1e-9, "冲锋枪音高 ×1.15")
+
+## 每步推 0.01s（近似连续时间），累计开火次数。
+func _run(w: Weapon, steps: int, held: bool) -> int:
+	var total := 0
+	for i in steps:
+		total += w.advance(0.01, held)
+	return total
+
+# ---- 冲锋枪整组连发（ADR-0026）----
+
+func test_burst_click_fires_group_of_five() -> void:
+	var w := Weapon.new(Weapon.BURST)
+	assert_true(w.press(), "点击立即开组（首发当场响）")
+	assert_eq(_run(w, 25, false), 4, "组内余 4 发在 0.25s 内按 50ms 间隔跟进，组完不再有")
+	assert_eq(_run(w, 25, false), 0, "无缓冲不续组")
+
+func test_burst_group_window_opens_430ms_from_group_start() -> void:
+	var w := Weapon.new(Weapon.BURST)
+	w.press() # t=0 组1
+	assert_eq(_run(w, 42, true), 4, "t=0.42 组1 余 4 发全出，窗口未到")
+	assert_eq(_run(w, 1, true), 1, "t=0.43 窗口开：按住即连组2 首发（组首起算 430ms）")
+
+func test_burst_click_during_cooldown_buffers_whole_group() -> void:
+	var w := Weapon.new(Weapon.BURST)
+	w.press() # 组1
+	w.press() # 组中点击 → 缓冲一整组
+	assert_eq(_run(w, 63, false), 9, "松键：组1 余 4 发打完，t=0.43 窗口补缓冲组，至 t=0.63 共 9 发")
+	assert_eq(_run(w, 50, false), 0, "缓冲组打完无残留")
+
+func test_burst_absorbs_extra_clicks_per_window() -> void:
+	var w := Weapon.new(Weapon.BURST)
+	w.press()
+	w.press() # 缓冲
+	w.press() # 被吸收
+	w.press() # 被吸收
+	assert_eq(_run(w, 63, false), 9, "同一窗口多次点击只缓冲一组")
+
+func test_burst_release_mid_group_does_not_interrupt() -> void:
+	var w := Weapon.new(Weapon.BURST)
+	w.press()
+	# 按住 2 帧后松开，组仍打完（fire-and-forget）
+	assert_eq(w.advance(0.01, true), 0)
+	assert_eq(_run(w, 40, false), 4, "松键不打断整组")
+
+func test_burst_hold_fires_continuous_groups() -> void:
+	var w := Weapon.new(Weapon.BURST)
+	var total := 1 if w.press() else 0 # t=0 组1 首发
+	total += _run(w, 100, true) # t=0..1.0
+	assert_eq(total, 13, "1 秒按住：组1(5) + 组2@0.43(5) + 组3@0.86 前 3 发 = 13")
+
+func test_burst_reset_drops_group_and_buffer() -> void:
+	var w := Weapon.new(Weapon.BURST)
+	w.press() # 组1
+	w.press() # 缓冲
+	w.advance(0.1, false) # 组1 推进（打出 2 发，余 2 发连同缓冲被切换武器丢弃）
+	w.reset() # 切换武器
+	assert_eq(_run(w, 50, false), 0, "缓冲已丢弃")
+	assert_true(w.press(), "切换武器后立即开新组")
+	assert_eq(_run(w, 25, true), 4, "新组余 4 发照常打完")
+
 func test_switch_weapon_discards_buffer_and_resets_cooldown() -> void:
 	var w := Weapon.new(Weapon.PISTOL)
 	w.press() # 开火
 	w.press() # 缓冲
-	w.reset() # 切枪
-	assert_true(w.press(), "切枪后下一发立即就绪（冷却清零）")
+	w.reset() # 切换武器
+	assert_true(w.press(), "切换武器后下一发立即就绪（冷却清零）")
 	# 缓冲已丢弃：再等一个间隔回来也不该有额外补发
 	var extra := 0
 	for i in range(10):
 		extra += w.advance(0.1, false)
-	assert_eq(extra, 0, "切枪丢弃缓冲")
+	assert_eq(extra, 0, "切换武器丢弃缓冲")

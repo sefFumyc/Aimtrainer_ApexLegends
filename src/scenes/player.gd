@@ -1,4 +1,4 @@
-## 玩家：移动（ADR-0002）、视角、开镜、切枪与开火节奏。
+## 玩家：移动（ADR-0002）、视角、开镜、切换武器与开火节奏。
 ##
 ## `CharacterBody3D` **只做碰撞求解**：水平速度全部由 `MovementSimulator` 按固定子步 1/240
 ## 算好，这里每帧只把「本帧位移 ÷ delta」喂给 `velocity` 交给 `move_and_slide()`，
@@ -21,14 +21,18 @@ const ZOOM_OUT_TIME := 0.088
 const FOV := 92.35
 const ZOOM_FOV := 76.64
 
-## 纯视觉后坐力（票 05）：开火瞬间相机轻踢上抬再回中，COD/Apex 手感——
+## 视觉后坐力（票 05）：开火瞬间相机轻踢上抬再回中，COD/Apex 手感——
 ## **只动渲染**：弹道方向永远取逻辑 yaw/pitch（见 `aim_direction`），后坐力不影响任何命中。
+## 参数按武器三档（票 06 拆档；ADR-0026 冲锋枪介于两枪之间偏步枪）：
 const RECOIL_PITCH_RIFLE := 0.018 ## 步枪单发上踢（rad，约 1.0°）；连发累计大，幅度收敛（票 06）
 const RECOIL_PITCH_PISTOL := 0.028 ## 手枪单发上踢（rad，约 1.6°）：单发间隔长，相机踢更大更「沉」
+const RECOIL_PITCH_BURST := 0.015 ## 冲锋枪单发上踢（rad，约 0.86°）：连发压迫但单组短促（ADR-0026）
 const RECOIL_YAW_RIFLE := 0.005 ## 每发随机水平抖动幅度（±rad），按武器分档（票 06）
 const RECOIL_YAW_PISTOL := 0.012 ## 手枪水平抖略大：单发大间歇配一个明显的小甩头
+const RECOIL_YAW_BURST := 0.008 ## 冲锋枪介于两枪之间（ADR-0026）
 const RECOIL_RECOVER_RIFLE := 10.0 ## 指数回中速率（1/s）：连发要回得快，否则糊成一团
 const RECOIL_RECOVER_PISTOL := 5.0 ## 手枪回中减半：单发要「沉」的手感（CONTEXT「视觉后坐力」）
+const RECOIL_RECOVER_BURST := 12.0 ## 冲锋枪回最快：组间隔短，回不快下组糊成一团（ADR-0026）
 
 ## 滑铲镜头动态（票 07，CONTEXT「滑铲镜头动态」）：纯渲染——侧倾跟随滑铲速度的
 ## 视线左右分量、FOV 在开镜缩放之上微扩；幅度统一乘 (1 − zoom_p)，满开镜收敛到 0。
@@ -164,21 +168,33 @@ func _tick_move(delta: float) -> void:
 	# 相机 = 逻辑朝向 + 视觉后坐力偏移 + 滑铲侧倾；后两者是纯渲染量，弹道不读。
 	camera.rotation = Vector3(pitch + _recoil_pitch, yaw + _recoil_yaw, _slide_roll)
 
-## 视觉后坐力：开火时上踢，指数回中（票 05）；回中速率按武器分档（票 06）。
+## 视觉后坐力：开火时上踢，指数回中（票 05）；回中速率按武器三档（票 06 / ADR-0026）。
 func _tick_recoil(delta: float) -> void:
-	var recover := RECOIL_RECOVER_RIFLE if Weapon.is_rifle(weapon) else RECOIL_RECOVER_PISTOL
+	var recover := RECOIL_RECOVER_PISTOL
+	match weapon:
+		Weapon.RIFLE:
+			recover = RECOIL_RECOVER_RIFLE
+		Weapon.BURST:
+			recover = RECOIL_RECOVER_BURST
 	var k := 1.0 - exp(-recover * delta)
 	_recoil_pitch = lerpf(_recoil_pitch, 0.0, k)
 	_recoil_yaw = lerpf(_recoil_yaw, 0.0, k)
 
 func _add_recoil() -> void:
-	var strong := Weapon.is_rifle(weapon)
+	var pitch := RECOIL_PITCH_PISTOL
+	var jitter := RECOIL_YAW_PISTOL
+	match weapon:
+		Weapon.RIFLE:
+			pitch = RECOIL_PITCH_RIFLE
+			jitter = RECOIL_YAW_RIFLE
+		Weapon.BURST:
+			pitch = RECOIL_PITCH_BURST
+			jitter = RECOIL_YAW_BURST
 	# 相机抖动倍率（票 08，CONTEXT「后坐力强度」）：每次开火实时读设置，改滑条对下一发生效。
 	var cam_mult := GameSettings.recoil_cam_mult_for(weapon)
-	_recoil_pitch += (RECOIL_PITCH_RIFLE if strong else RECOIL_PITCH_PISTOL) * cam_mult
-	var jitter := RECOIL_YAW_RIFLE if strong else RECOIL_YAW_PISTOL
+	_recoil_pitch += pitch * cam_mult
 	_recoil_yaw += randf_range(-jitter, jitter) * cam_mult
-	viewmodel.kick(strong)
+	viewmodel.kick(weapon)
 
 func _read_control() -> MovementSimulator.MoveControl:
 	var c := MovementSimulator.MoveControl.new()
@@ -210,20 +226,23 @@ func set_weapon(id: StringName) -> void:
 	weapon_changed.emit(id)
 
 func switch_weapon() -> void:
-	set_weapon(Weapon.other(weapon))
+	set_weapon(Weapon.next(weapon))
 
 func _tick_weapon(delta: float) -> void:
-	# 切枪：1 / 2 直接选，Q（手柄 Y）就近切。切枪会丢弃手枪缓冲并让下一发立即就绪。
+	# 切换武器：1 / 2 / 3 直接选，Q（手柄 Y）三枪循环（ADR-0026）。切换会丢弃手枪缓冲/
+	# 冲锋枪组剩余与缓冲，并让下一发立即就绪。
 	if Input.is_action_just_pressed("weapon_rifle"):
 		set_weapon(Weapon.RIFLE)
 	elif Input.is_action_just_pressed("weapon_pistol"):
 		set_weapon(Weapon.PISTOL)
+	elif Input.is_action_just_pressed("weapon_burst"):
+		set_weapon(Weapon.BURST)
 	elif Input.is_action_just_pressed("weapon_switch"):
 		switch_weapon()
 
 	var held := Input.is_action_pressed("fire")
-	# 手枪是单发：点击边沿喂一发；`press()` 返回 true 表示「冷却就绪、当场开火」，
-	# 返回 false 表示冷却中、已缓冲一发（交给 advance 在冷却结束时补发）。
+	# 手枪/冲锋枪是点击边沿武器：`press()` 返回 true 表示「冷却就绪、当场开火」，
+	# 返回 false 表示冷却中已缓冲（手枪一发 / 冲锋枪一整组，交给 advance 补发）。
 	if not Weapon.automatic(weapon) and Input.is_action_just_pressed("fire"):
 		if _fire.press():
 			_add_recoil()

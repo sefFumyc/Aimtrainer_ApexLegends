@@ -227,16 +227,18 @@ func _build_video_page(page: VBoxContainer) -> void:
 	quality.item_selected.connect(_on_quality)
 	page.add_child(_row("画面质量", quality))
 
-## 「后坐力强度」分页（票 08）：四通道倍率滑条平铺，倍率量纲 0–2、步进 0.01、
-## 两位小数；0 = 关掉该通道抖动。出厂默认即玩家实测定稿手感。个人手感偏好，
-## 随 GameSettings 即改即存、不进预设。
+## 「后坐力强度」分页（票 08 / ADR-0026）：六通道倍率滑条平铺，倍率量纲 0–2、步进 0.01、
+## 两位小数；0 = 关掉该通道抖动。步枪/手枪出厂默认即玩家实测定稿手感，冲锋枪中性 1.0。
+## 个人手感偏好，随 GameSettings 即改即存、不进预设。
 func _build_recoil_page(page: VBoxContainer) -> void:
 	var lo: float = GameSettings.RECOIL_MULT_MIN
 	var hi: float = GameSettings.RECOIL_MULT_MAX
 	page.add_child(_row("步枪枪械抖动", _bound_slider(lo, hi, 0.01, GameSettings.recoil_gun_rifle, &"recoil_gun_rifle")))
 	page.add_child(_row("手枪枪械抖动", _bound_slider(lo, hi, 0.01, GameSettings.recoil_gun_pistol, &"recoil_gun_pistol")))
+	page.add_child(_row("冲锋枪枪械抖动", _bound_slider(lo, hi, 0.01, GameSettings.recoil_gun_burst, &"recoil_gun_burst")))
 	page.add_child(_row("步枪相机抖动", _bound_slider(lo, hi, 0.01, GameSettings.recoil_cam_rifle, &"recoil_cam_rifle")))
 	page.add_child(_row("手枪相机抖动", _bound_slider(lo, hi, 0.01, GameSettings.recoil_cam_pistol, &"recoil_cam_pistol")))
+	page.add_child(_row("冲锋枪相机抖动", _bound_slider(lo, hi, 0.01, GameSettings.recoil_cam_burst, &"recoil_cam_burst")))
 
 	var hint := Label.new()
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART

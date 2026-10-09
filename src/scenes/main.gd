@@ -519,11 +519,10 @@ func _on_shot_fired(id: StringName) -> void:
 			# 命中形状所属部件名含 head/helmet 即爆头（靶命中体由模型部件几何构成）
 			headshot = Target.is_headshot(body, hit["shape"])
 
+	_play_sound(_shot_audio, SHOT_VOLUME, _shot_pitch() * Weapon.sound_pitch(id)) ## 枪声两分支同款，上提
 	if shot_target == null:
-		_play_sound(_shot_audio, SHOT_VOLUME, _shot_pitch())
 		match_state.record_shot(false)
 	else:
-		_play_sound(_shot_audio, SHOT_VOLUME, _shot_pitch())
 		var damage := Weapon.headshot_damage(id) if headshot else Weapon.body_damage(id)
 		match_state.record_shot(true)
 		_play_sound(

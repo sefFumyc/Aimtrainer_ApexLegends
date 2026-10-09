@@ -30,39 +30,48 @@ const PROC_SIGHT_HEIGHT := 2.6
 const ADS_Z := -8.0
 
 ## 枪口在武器挂点本地坐标 = 拟合后的枪管前端。模型枪改用 **Muzzle 标记**（枪管轴线，
-## ADR-0021 二轮），这两个常量只作程序化兜底枪的口径（兜底枪管就在 y = 0）。
+## ADR-0021 二轮），这三个常量只作程序化兜底枪的口径（兜底枪管就在 y = 0）。
 const RIFLE_MUZZLE_LOCAL := Vector3(0.0, 0.0, -25.0)
 const PISTOL_MUZZLE_LOCAL := Vector3(0.0, 0.0, -7.5)
-## 两把枪拟合后的总长（枪口端到握把端）。
+const BURST_MUZZLE_LOCAL := Vector3(0.0, 0.0, -18.0)
+## 三把枪拟合后的总长（枪口端到握把端）；冲锋枪紧凑 SMG（ADR-0026），介于两枪之间偏短。
 const RIFLE_LENGTH := 25.0
 const PISTOL_LENGTH := 7.5
+const BURST_LENGTH := 18.0
 ## 枪管高度系数（ADR-0021 二轮，截图探针两轮定稿）：Muzzle 标记 y = −拟合高度 × 系数。
 ## 起点 = 枪管轴线（枪口孔位）而非枪体顶面前角——火光是大球看不出来，曳光细线对起点
-## 高度敏感（实测从「枪口上面」出来）。
+## 高度敏感（实测从「枪口上面」出来）。冲锋枪系数已随 blaster-g 选型定稿（ADR-0026）：
+## 枪口端面顶点直方图圆环轴 + 渲染探针亮球双重确认，恰好与步枪同值。
 const RIFLE_BORE_FRAC := 0.36
 const PISTOL_BORE_FRAC := 0.34
+const BURST_BORE_FRAC := 0.36
 
 ## Kenney Blaster Kit（CC0）模型路径；文件不存在时回落到程序化几何。
 const RIFLE_MODEL := "res://assets/third_party/kenney_blaster-kit/rifle/blaster-d.glb"
 const PISTOL_MODEL := "res://assets/third_party/kenney_blaster-kit/pistol/blaster-k.glb"
+const BURST_MODEL := "res://assets/third_party/kenney_blaster-kit/smg/blaster-g.glb" ## ADR-0026：P90 风选型
 
 const METAL := Color(0.16, 0.17, 0.20)
 const GRIP := Color(0.28, 0.25, 0.22)
 const DOT_COLOR := Color(0.95, 0.22, 0.18)
 
 ## 纯视觉后坐力（票 05）：开火瞬间枪体后坐 + 上抬，弹性回位——只动挂点，与开镜基准叠加。
-## 票 06 分档：步枪收敛（连发累计大），手枪维持原值（1.8×0.6 / 0.1×0.6）不放大。
+## 票 06 分档：步枪收敛（连发累计大），手枪维持原值（1.8×0.6 / 0.1×0.6）不放大；
+## ADR-0026 冲锋枪略轻于步枪（连发压迫但单组短促）。
 const KICK_BACK_RIFLE := 1.1 ## 步枪后坐位移（沿挂点 +Z，朝相机方向）
 const KICK_PITCH_RIFLE := 0.06 ## 步枪上抬角（rad）
 const KICK_BACK_PISTOL := 1.08 ## 手枪后坐位移（原 1.8 × 0.6，保持不变）
 const KICK_PITCH_PISTOL := 0.06 ## 手枪上抬角（原 0.1 × 0.6，保持不变）
-const KICK_RECOVER := 14.0 ## 指数回位速率（1/s），两枪共用
+const KICK_BACK_BURST := 1.0 ## 冲锋枪后坐位移（三枪最轻）
+const KICK_PITCH_BURST := 0.05 ## 冲锋枪上抬角
+const KICK_RECOVER := 14.0 ## 指数回位速率（1/s），三枪共用
 
 @onready var weapon_camera: Camera3D = $SubViewport/WeaponCamera
 @onready var rig: Node3D = $SubViewport/WeaponCamera/WeaponRig
 
 var _rifle: Node3D
 var _pistol: Node3D
+var _burst: Node3D
 var _weapon: StringName = Weapon.RIFLE
 var _zoom := 0.0
 ## 每把枪的红点镜轴高度（票 06）：两把枪镜高不同，按武器查表——
@@ -84,8 +93,10 @@ func _ready() -> void:
 	_build_world()
 	_rifle = _build_weapon("Rifle", Weapon.RIFLE)
 	_pistol = _build_weapon("Pistol", Weapon.PISTOL)
+	_burst = _build_weapon("Burst", Weapon.BURST)
 	rig.add_child(_rifle)
 	rig.add_child(_pistol)
+	rig.add_child(_burst)
 	apply_zoom(0.0)
 	set_weapon(Weapon.RIFLE)
 
@@ -108,10 +119,12 @@ func _build_world() -> void:
 func set_weapon(id: StringName) -> void:
 	_weapon = id
 	if _rifle != null:
-		_rifle.visible = Weapon.is_rifle(id)
+		_rifle.visible = id == Weapon.RIFLE
 	if _pistol != null:
-		_pistol.visible = not Weapon.is_rifle(id)
-	apply_zoom(_zoom) ## 镜高按枪不同（票 06），切枪重算开镜基准
+		_pistol.visible = id == Weapon.PISTOL
+	if _burst != null:
+		_burst.visible = id == Weapon.BURST
+	apply_zoom(_zoom) ## 镜高按枪不同（票 06），切换武器重算开镜基准
 
 ## 开镜进度 p（0 腰射 / 1 满开镜）。
 ## 俯仰角在满开镜时归零——否则那 −0.06 的枪口下压会把准镜带离准星轴。
@@ -122,12 +135,21 @@ func apply_zoom(p: float) -> void:
 	_base_rot = Vector3(GUN_BASE_PITCH * (1.0 - _zoom), GUN_BASE_YAW * (1.0 - _zoom), 0.0)
 	_apply_rig()
 
-## 开火一瞬的后坐注入（player 调用）：按武器取各自档位（票 06 拆档），幅度乘
+## 开火一瞬的后坐注入（player 调用）：按武器取各自档位（票 06 拆档 / ADR-0026），幅度乘
 ## 「枪械抖动」倍率（票 08，CONTEXT「后坐力强度」）——每次开火实时读设置，改滑条对下一发生效。
-func kick(strong: bool) -> void:
-	var gun_mult := GameSettings.recoil_gun_mult_for(_weapon)
-	_kick_pos += (KICK_BACK_RIFLE if strong else KICK_BACK_PISTOL) * gun_mult
-	_kick_pitch += (KICK_PITCH_RIFLE if strong else KICK_PITCH_PISTOL) * gun_mult
+func kick(id: StringName) -> void:
+	var back := KICK_BACK_PISTOL
+	var pitch := KICK_PITCH_PISTOL
+	match id:
+		Weapon.RIFLE:
+			back = KICK_BACK_RIFLE
+			pitch = KICK_PITCH_RIFLE
+		Weapon.BURST:
+			back = KICK_BACK_BURST
+			pitch = KICK_PITCH_BURST
+	var gun_mult := GameSettings.recoil_gun_mult_for(id)
+	_kick_pos += back * gun_mult
+	_kick_pitch += pitch * gun_mult
 
 func _process(delta: float) -> void:
 	var k := 1.0 - exp(-KICK_RECOVER * delta)
@@ -137,32 +159,36 @@ func _process(delta: float) -> void:
 	pose_applied.emit()
 
 ## 挂点位姿 = 开镜基准 + 后坐偏移（后坐沿 +Z 朝相机、上抬绕 X）。
-## 开镜枪体行为按武器分档（票 08，CONTEXT「视觉后坐力」）：步枪的**上抬角**随开镜进度
-## 收敛到零——红点贴准星轴、枪模不上下跳（前后后坐沿视线轴，红点不出轴心，满开镜呈纯
-## 前后震）；手枪**完全不收敛**——开镜与腰射一样上下跳（单发「沉」的手感）。
-## 前后位移两枪都满幅保留。
+## 开镜枪体行为按武器分档（票 08 / ADR-0026，CONTEXT「视觉后坐力」）：连发压迫档
+## （步枪、冲锋枪）的**上抬角**随开镜进度收敛到零——红点贴准星轴、枪模不上下跳
+## （前后后坐沿视线轴，红点不出轴心，满开镜呈纯前后震）；手枪**完全不收敛**——
+## 开镜与腰射一样上下跳（单发「沉」的手感）。前后位移三枪都满幅保留。
 func _apply_rig() -> void:
-	var pitch_damp := (1.0 - _zoom) if Weapon.is_rifle(_weapon) else 1.0
+	var pitch_damp := (1.0 - _zoom) if Weapon.is_auto_tier(_weapon) else 1.0
 	rig.position = _base_pos + Vector3(0.0, 0.0, _kick_pos)
 	rig.rotation = _base_rot + Vector3(_kick_pitch * pitch_damp, 0.0, 0.0)
 
 ## 当前武器枪口的世界坐标（火光与曳光弹的起点）。
-## 模型枪 = Muzzle 标记（枪管轴线，ADR-0021 二轮）；程序化兜底枪 = 挂点本地 (0,0,−len)。
+## 模型枪 = Muzzle 标记（枪管轴线，ADR-0021 二轮）；程序化兜底枪 = 挂点本地常量口径。
 func muzzle_world() -> Vector3:
 	var marker: Node3D = _muzzle_markers.get(_weapon)
 	if marker != null:
 		return marker.global_position
-	var local := RIFLE_MUZZLE_LOCAL if Weapon.is_rifle(_weapon) else PISTOL_MUZZLE_LOCAL
+	var local := RIFLE_MUZZLE_LOCAL
+	match _weapon:
+		Weapon.PISTOL:
+			local = PISTOL_MUZZLE_LOCAL
+		Weapon.BURST:
+			local = BURST_MUZZLE_LOCAL
 	return rig.to_global(local)
 
 func _build_weapon(node_name: String, id: StringName) -> Node3D:
 	var root := Node3D.new()
 	root.name = node_name
-	var rifle := Weapon.is_rifle(id)
-	var length := RIFLE_LENGTH if rifle else PISTOL_LENGTH
-	var loaded := _try_load_model(RIFLE_MODEL if rifle else PISTOL_MODEL)
+	var length := _length_of(id)
+	var loaded := _try_load_model(_model_path(id))
 	if loaded != null:
-		root.add_child(_fit_model(loaded, length, RIFLE_BORE_FRAC if rifle else PISTOL_BORE_FRAC))
+		root.add_child(_fit_model(loaded, length, _bore_frac_of(id)))
 		_muzzle_markers[id] = root.get_node("Model/Muzzle")
 		# 1x 红点镜骑在枪顶（票 06）：红点即瞄准基线——返回值按枪记录，满开镜时
 		# `_base_pos.y = -镜高` 让红点正落准星轴，与准星重合、视野无遮挡。
@@ -170,6 +196,34 @@ func _build_weapon(node_name: String, id: StringName) -> Node3D:
 	else:
 		_build_procedural(root, id)
 	return root
+
+## 每枪的模型路径 / 拟合总长 / 枪管高度系数（票 06 查表模式的显式三枪版，ADR-0026）。
+func _model_path(id: StringName) -> String:
+	match id:
+		Weapon.PISTOL:
+			return PISTOL_MODEL
+		Weapon.BURST:
+			return BURST_MODEL
+		_:
+			return RIFLE_MODEL
+
+func _length_of(id: StringName) -> float:
+	match id:
+		Weapon.PISTOL:
+			return PISTOL_LENGTH
+		Weapon.BURST:
+			return BURST_LENGTH
+		_:
+			return RIFLE_LENGTH
+
+func _bore_frac_of(id: StringName) -> float:
+	match id:
+		Weapon.PISTOL:
+			return PISTOL_BORE_FRAC
+		Weapon.BURST:
+			return BURST_BORE_FRAC
+		_:
+			return RIFLE_BORE_FRAC
 
 ## 程序化 1x 红点镜（票 06 定稿样式：无环开框式——两侧细柱 + 顶端红段 + 悬浮红点，
 ## 参照 Apex 1x 红点镜：中间完全开放不挡视野；kit 里没有独立瞄具模型）。
@@ -285,7 +339,7 @@ func _set_weapon_layers(node: Node) -> void:
 	for child in node.get_children():
 		_set_weapon_layers(child)
 
-## 程序化兜底：枪管 + 机匣 + 握把 + 红点镜框。尺寸照参考实现。
+## 程序化兜底：枪管 + 机匣 + 握把 + 红点镜框。尺寸照参考实现；冲锋枪 = 短管无托（ADR-0026）。
 func _build_procedural(root: Node3D, id: StringName) -> void:
 	var metal := StandardMaterial3D.new()
 	metal.albedo_color = METAL
@@ -300,17 +354,31 @@ func _build_procedural(root: Node3D, id: StringName) -> void:
 	dot.emission = DOT_COLOR
 	dot.emission_energy_multiplier = 2.5
 
-	var rifle := Weapon.is_rifle(id)
-	var barrel_len := 22.0 if rifle else 8.0
-	var barrel_z := -14.0 if rifle else -3.5
+	var barrel_len := 22.0
+	var barrel_z := -14.0
+	var receiver_z := -2.0
+	var frame_z := -6.0
+	var stock := true
+	match id:
+		Weapon.PISTOL:
+			barrel_len = 8.0
+			barrel_z = -3.5
+			receiver_z = -1.0
+			frame_z = -3.0
+			stock = false
+		Weapon.BURST:
+			barrel_len = 14.0
+			barrel_z = -9.0
+			receiver_z = -1.5
+			frame_z = -5.0
+			stock = false
 	root.add_child(_box("Barrel", Vector3(0.6, 0.6, barrel_len), Vector3(0.0, 0.0, barrel_z), metal))
-	root.add_child(_box("Receiver", Vector3(1.6, 1.4, 5.0), Vector3(0.0, -0.2, -2.0 if rifle else -1.0), metal))
+	root.add_child(_box("Receiver", Vector3(1.6, 1.4, 5.0), Vector3(0.0, -0.2, receiver_z), metal))
 	root.add_child(_box("Grip", Vector3(1.1, 3.2, 1.4), Vector3(0.0, -2.0, 1.2), grip_mat))
-	if rifle:
+	if stock:
 		root.add_child(_box("Stock", Vector3(1.2, 1.2, 4.0), Vector3(0.0, -0.5, 3.5), grip_mat))
-	# 镜框三边 + 红点（同一款瞄具两把枪共用）；高度取 PROC_SIGHT_HEIGHT，开镜时才落准星轴上。
+	# 镜框三边 + 红点（同一款瞄具三把枪共用）；高度取 PROC_SIGHT_HEIGHT，开镜时才落准星轴上。
 	var frame_y := PROC_SIGHT_HEIGHT
-	var frame_z := -6.0 if rifle else -3.0
 	root.add_child(_box("FrameL", Vector3(0.25, 1.8, 0.3), Vector3(-0.9, frame_y, frame_z), metal))
 	root.add_child(_box("FrameR", Vector3(0.25, 1.8, 0.3), Vector3(0.9, frame_y, frame_z), metal))
 	root.add_child(_box("FrameB", Vector3(2.05, 0.25, 0.3), Vector3(0.0, frame_y - 0.78, frame_z), metal))
