@@ -575,30 +575,27 @@ func test_jump_disabled_never_jumps() -> void:
 	assert_eq(result[0], 0, "开关关着不该跳")
 	assert_eq(result[1], 0, "也没有离地帧")
 
-func test_no_rejump_mid_air() -> void:
-	# 固定 0.05s 间隔（滞空约 0.72s 内到点十余次）：首个上升沿后 0.6s 内不得出现第二个
-	# 上升沿——空中重触发或落地即重跳都会把间隔压进 0.6s 以内（单帧信号 + 空中作废的直接观察）。
+func test_fast_interval_chains_continuous_air() -> void:
+	# 固定 0.05s 间隔（远小于滞空 0.72s）：每轮到点都在空中、照发锁存信号，落地帧立即起跳
+	# （票 12 / ADR-0024 锁存 bhop）——首跳之后帧级不应再有落地帧。
+	# 旧「作废」语义下每跳都有地面停留（landings ≥ 2）。
 	var bot := bot_at(Vector2(0.0, -120.0))
 	var p := jump_perception(0.05, 0.05)
-	var first_at := -1.0
-	var gap := -1.0
+	var took_off := false
+	var landings := 0
 	var was_air := false
 	var elapsed := 0.0
-	while elapsed < 3.0 and gap < 0.0:
+	while elapsed < 2.0:
 		bot.update(0.01, p)
 		var air := bot.sim.airborne()
-		if air and not was_air:
-			if first_at < 0.0:
-				first_at = elapsed
-			elif elapsed - first_at > 0.6:
-				gap = elapsed - first_at
-			else:
-				gap = -2.0 # 滞空未结束又离地——违例
-				break
+		if air:
+			took_off = true
+		elif was_air:
+			landings += 1
 		was_air = air
 		elapsed += 0.01
-	assert_gt(first_at, 0.0, "起跳了")
-	assert_gt(gap, 0.0, "第二次离地发生在滞空结束之后（间隔 >0.6s）")
+	assert_true(took_off, "起跳过")
+	assert_eq(landings, 0, "连跳成立：0.05s 间隔全程锁存，帧级无落地帧")
 
 func test_jump_blocked_at_due_is_discarded_not_queued() -> void:
 	# 固定 1s 间隔：1.0s 到点时视线被挡 → 作废重抽（下一轮整整 1s 后）；
@@ -668,3 +665,173 @@ func test_jump_dice_do_not_disturb_fire_sequence() -> void:
 		if seq_a[i] != seq_b[i]:
 			mismatch = true
 	assert_false(mismatch, "命中/失手序列逐发一致（跳跃骰独立随机源）")
+
+# ---- bot 空中机动（票 12 / ADR-0024）----
+
+## 玩家每帧跟随 bot 正前方 dist 处：锁定面朝 yaw = π（侧向轴恒 ±x）、距离恒定。
+func follow_player(p: BotAi.Perception, bot: BotAi, dist := 120.0) -> void:
+	var pos := bot.sim.position()
+	p.player_x = pos.x
+	p.player_z = pos.y + dist
+
+func test_half_second_interval_chains_bhop() -> void:
+	# 0.5s 间隔 < 滞空 0.724s：空中到点锁存、落地帧立即起跳——空中区间至少两跳连贯（≥1.4s）。
+	# 旧「作废」语义下最长区间只有单跳 ≈0.73s，地面间隙 2I − 滞空 恒存（用户实测的「站稳才跳」）。
+	var bot := bot_at(Vector2(0.0, -120.0))
+	var p := jump_perception(0.5, 0.5)
+	var stretch := 0.0
+	var cur := 0.0
+	var elapsed := 0.0
+	while elapsed < 3.0:
+		bot.update(0.01, p)
+		if bot.sim.airborne():
+			cur += 0.01
+			stretch = maxf(stretch, cur)
+		else:
+			cur = 0.0
+		elapsed += 0.01
+	assert_gt(stretch, 1.4, "锁存 bhop：空中区间至少两跳连贯")
+
+func test_air_cuts_forward_input() -> void:
+	# 游走必掷前压（W）：地面阶段斜前移动；起跳后空中 fwd 强制归零——
+	# 0.35s 内速度被 6 rad/s 空中转向转回纯侧向（朝向锁死），朝玩家分量衰减到 0。
+	# 旧语义空中照喂 W：wish 保持斜前，朝玩家分量不减。
+	var cfg := config()
+	cfg.wander = 1.0
+	cfg.aggression = 1.0
+	cfg.retreat = 0.0
+	var bot := bot_at(Vector2(0.0, -120.0), Callable(), cfg)
+	var p := perception()
+	p.wander_mode = true
+	p.range_amp = 25.0
+	p.jump_enabled = true
+	p.jump_min = 0.1
+	p.jump_max = 0.1
+	bot.avoidance.dir = AvoidanceController.DIR_RIGHT
+	bot.avoidance.flip_timer = 999.0
+	bot.avoidance.switch_timer = 999.0
+	var vz_takeoff := 0.0
+	var vz_late := 0.0
+	var elapsed := 0.0
+	while elapsed < 0.5:
+		follow_player(p, bot)
+		bot.update(0.01, p)
+		if bot.sim.airborne() and vz_takeoff == 0.0:
+			vz_takeoff = bot.sim.velocity().y
+		if elapsed >= 0.45:
+			vz_late = bot.sim.velocity().y
+		elapsed += 0.01
+	assert_gt(absf(vz_takeoff), 60.0, "前置：起跳时带着明显的朝玩家分量（W 生效）")
+	assert_lt(absf(vz_late), 20.0, "空中前后输入归零：朝玩家分量被转回纯侧向")
+
+func test_air_flip_ascending_defers_to_apex() -> void:
+	# 上升期到点的自然变向：avoidance 状态照翻（挂起），输入维持起跳方向到最高点；
+	# apex（≈0.66s）后应用新方向，剩余下降期 6 rad/s 足以转过头。
+	var bot := bot_at(Vector2(0.0, -120.0))
+	var p := jump_perception(0.3, 0.3)
+	bot.avoidance.dir = AvoidanceController.DIR_LEFT
+	bot.avoidance.flip_timer = 0.35 # flip_timer 自 spawn 起倒数：t≈0.35 到点（起跳 t≈0.3 后，仍在上升期）
+	bot.avoidance.switch_timer = 999.0
+	var vx_mid := 0.0
+	var vx_late := 0.0
+	var elapsed := 0.0
+	while elapsed < 1.05:
+		follow_player(p, bot)
+		bot.update(0.01, p)
+		if elapsed >= 0.6 and elapsed < 0.61:
+			vx_mid = bot.sim.velocity().x
+		if elapsed >= 1.0:
+			vx_late = bot.sim.velocity().x
+		elapsed += 0.01
+	assert_ne(bot.avoidance.dir, AvoidanceController.DIR_LEFT, "到点已翻向（挂起的是应用时机）")
+	assert_gt(vx_mid, 150.0, "上升期输入维持起跳方向：速度仍朝 +x")
+	assert_lt(vx_late, 0.0, "apex 后应用新方向：下降期完成反向")
+
+func test_air_flip_descending_discarded() -> void:
+	# 下降期到点的自然变向被丢弃：不翻向、间隔照常重抽——整跳方向稳定，
+	# 落地帧输入与速度同向，不触发「转向衰减」急刹。
+	var bot := bot_at(Vector2(0.0, -120.0))
+	var p := jump_perception(0.3, 0.3)
+	bot.avoidance.dir = AvoidanceController.DIR_LEFT
+	bot.avoidance.flip_timer = 0.8 # t≈0.80 到点：apex（≈0.66）之后、落地（≈1.02）之前
+	bot.avoidance.switch_timer = 999.0
+	var elapsed := 0.0
+	var vx_late := 0.0
+	while elapsed < 1.0:
+		follow_player(p, bot)
+		bot.update(0.01, p)
+		if elapsed >= 0.95:
+			vx_late = bot.sim.velocity().x
+		elapsed += 0.01
+	assert_eq(bot.avoidance.dir, AvoidanceController.DIR_LEFT, "下降期到点不翻向")
+	# 作废也照常重抽：重抽值落在当前模式的变向区间内（±一帧 dt 容差）
+	var range_lo: float = AvoidanceController.STRAFE_MIN[bot.avoidance.mode]
+	assert_gt(bot.avoidance.flip_timer, range_lo - 0.011, "变向间隔照常重抽（作废不占位）")
+	assert_gt(vx_late, 150.0, "整跳方向稳定：速度仍朝起跳方向")
+
+func test_air_flip_armed_second_due_discarded() -> void:
+	# 上升期挂起一次后，同一滞空内再到的点作废（一次滞空最多挂起一个）：
+	# 第二次不翻向，apex 应用的仍是第一次挂起的方向（覆盖语义会翻回并保持旧方向）。
+	var bot := bot_at(Vector2(0.0, -120.0))
+	var p := jump_perception(0.3, 0.3)
+	bot.avoidance.dir = AvoidanceController.DIR_LEFT
+	bot.avoidance.flip_timer = 0.35 # 第一次到点 t≈0.35（上升期）→ 挂起，LEFT→RIGHT
+	bot.avoidance.switch_timer = 999.0
+	var armed_seen := false
+	var elapsed := 0.0
+	while elapsed < 1.05:
+		follow_player(p, bot)
+		bot.update(0.01, p)
+		if bot.avoidance.dir == AvoidanceController.DIR_RIGHT and not armed_seen:
+			armed_seen = true
+			bot.avoidance.flip_timer = 0.05 # 压第二次到点 t≈0.40，仍在上升期（<0.66）
+		elapsed += 0.01
+	assert_true(armed_seen, "前置：第一次到点已挂起翻向")
+	assert_eq(bot.avoidance.dir, AvoidanceController.DIR_RIGHT, "挂起中再到点作废：不再翻回")
+	assert_lt(bot.sim.velocity().x, 0.0, "apex 应用的是第一次挂起的方向")
+
+func test_air_block_flip_immediate_mid_air() -> void:
+	# 防撞翻向（on_blocked）不受分段管制：上升期翻向当帧生效——快照同步，
+	# 不被「上升期喂起跳方向」的快照机制滞留到 apex（守恒测试：现实现即绿）。
+	var bot := bot_at(Vector2(0.0, -120.0))
+	var p := jump_perception(0.3, 0.3)
+	bot.avoidance.dir = AvoidanceController.DIR_LEFT
+	bot.avoidance.flip_timer = 999.0
+	bot.avoidance.switch_timer = 999.0
+	var elapsed := 0.0
+	var flipped := false
+	var vx_after := 0.0
+	while elapsed < 0.6:
+		follow_player(p, bot)
+		bot.update(0.01, p)
+		if not flipped and bot.sim.airborne() and elapsed > 0.35:
+			assert_true(bot.on_blocked(2.9, 0.0), "上升期物理受阻 → 立即翻向")
+			flipped = true
+		if flipped:
+			vx_after = bot.sim.velocity().x
+		elapsed += 0.01
+	assert_true(flipped, "前置：空中已完成翻向注入")
+	assert_lt(vx_after, 100.0, "翻向当帧起速度转向新方向（不被快照滞留）")
+
+func test_air_dodge_flip_immediate_mid_air() -> void:
+	# 受击躲避不受分段管制：上升期躲避翻向当帧生效（快照同步，守恒测试：现实现即绿）。
+	var bot := bot_at(Vector2(0.0, -120.0))
+	var p := jump_perception(0.3, 0.3)
+	p.dodge_chance = 1.0
+	bot.avoidance.dir = AvoidanceController.DIR_LEFT
+	bot.avoidance.flip_timer = 999.0
+	bot.avoidance.switch_timer = 999.0
+	var elapsed := 0.0
+	var flipped := false
+	var vx_after := 0.0
+	while elapsed < 0.6:
+		follow_player(p, bot)
+		bot.update(0.01, p)
+		if not flipped and bot.sim.airborne() and elapsed > 0.35:
+			assert_false(bot.take_damage(25, p), "非致命受击")
+			flipped = true
+		if flipped:
+			vx_after = bot.sim.velocity().x
+		elapsed += 0.01
+	assert_ne(bot.avoidance.dir, AvoidanceController.DIR_LEFT, "躲避翻向已发生")
+	assert_lt(vx_after, 100.0, "躲避翻向当帧起生效（不被快照滞留）")

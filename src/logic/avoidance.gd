@@ -71,19 +71,25 @@ func spawn() -> void:
 	since_flip = 0.0
 
 ## 推进计时：变向计时归零 → 翻向并重抽（含前后分量）；切换计时归零 → 按权重抽新模式并重置变向计时。
-func update(dt: float) -> void:
+## `allow_flip = false` 时到点**作废**：不翻向、不掷前后分量、`since_flip` 不清，但间隔照常重抽
+## （bot 空中变向分段的丢弃/挂起中后到作废共用这条通道，ADR-0024）。返回本帧是否真的自然变向。
+func update(dt: float, allow_flip := true) -> bool:
 	since_flip += dt
+	var flipped := false
 	flip_timer -= dt
 	if flip_timer <= 0.0:
-		dir = -dir
-		fore_mix = _roll_fore_mix() # 自然变向 = 除刷新外唯一的前后分量重掷点
-		flip_timer = _random_seconds(_mode_range())
-		since_flip = 0.0
+		if allow_flip:
+			dir = -dir
+			fore_mix = _roll_fore_mix() # 自然变向 = 除刷新外唯一的前后分量重掷点（先掷，保持旧 RNG 序）
+			since_flip = 0.0
+			flipped = true
+		flip_timer = _random_seconds(_mode_range()) # 跳了或作废都照常重抽
 	switch_timer -= dt
 	if switch_timer <= 0.0:
 		mode = _weighted_pick()
 		flip_timer = _random_seconds(_mode_range())
 		switch_timer = _random_seconds(Vector2(_config.switch_min, _config.switch_max))
+	return flipped
 
 ## 撞墙 / 前向探测被迫反向：只翻方向，不动任何计时、不重掷前后分量。
 ## 它是安全纠正、永不被「最短躲避时间」拦，但仍算方向确定事件 → 重置时钟。
