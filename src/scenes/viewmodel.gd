@@ -41,10 +41,11 @@ const BURST_LENGTH := 18.0
 ## 枪管高度系数（ADR-0021 二轮，截图探针两轮定稿）：Muzzle 标记 y = −拟合高度 × 系数。
 ## 起点 = 枪管轴线（枪口孔位）而非枪体顶面前角——火光是大球看不出来，曳光细线对起点
 ## 高度敏感（实测从「枪口上面」出来）。手枪/冲锋枪两值随朝向勘误（ADR-0026）重校：
-## 原值是对着错误端定的，现按**原始枪口端面**顶点带中心取值（k 套筒上部管口、
-## g 机匣上高位管口），d 的 0.36 与其枪口端面带中心 0.37 吻合不动。游戏内截图终验后微调。
+## 原值是对着错误端定的，现按**原始枪口端面**顶点带中心取值（k 0.29 = 套筒管口带
+## y 0.041–0.101 带中心、g 0.18 = 机匣管口带 y 0.094–0.134），d 的 0.36 经截图探针
+## 定稿、落在其枪口端面带内不动。游戏内截图终验后微调。
 const RIFLE_BORE_FRAC := 0.36
-const PISTOL_BORE_FRAC := 0.26
+const PISTOL_BORE_FRAC := 0.29
 const BURST_BORE_FRAC := 0.18
 
 ## Kenney Blaster Kit（CC0）模型路径；文件不存在时回落到程序化几何。
@@ -230,7 +231,7 @@ func _bore_frac_of(id: StringName) -> float:
 ## blaster-d 是 +Z，blaster-k/g 是 **−Z**（玩家实测拿反 + 端面顶点探针确认）。
 ## 翻转后（或无需翻转时）枪口端都落在 min z，Muzzle 的 z/y 公式两种朝向通用。
 func _model_flip(id: StringName) -> bool:
-	return id != Weapon.PISTOL and id != Weapon.BURST
+	return id == Weapon.RIFLE
 
 ## 程序化 1x 红点镜（票 06 定稿样式：无环开框式——两侧细柱 + 顶端红段 + 悬浮红点，
 ## 参照 Apex 1x 红点镜：中间完全开放不挡视野；kit 里没有独立瞄具模型）。
