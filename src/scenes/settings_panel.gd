@@ -288,7 +288,8 @@ func is_capturing() -> bool:
 	return _capturing_action != StringName("")
 
 ## 改键采集（ADR-0025）：`_input` 先于 GUI 拿到事件并吞掉，防止手柄键顺手触发聚焦中的
-## 控件。手柄按键与过阈值（0.6）的轴算有效绑定；Esc 取消；键鼠事件不劫持（点别处可换目标）。
+## 控件。手柄按键与过阈值（0.6）的轴算有效绑定；键盘按下事件一律吞掉——Esc 是取消，
+## 其余键（含 Space/Enter）不能在采集态重触发聚焦中的改键按钮；键鼠点击不劫持（点别处可换目标）。
 func _input(event: InputEvent) -> void:
 	if not is_capturing():
 		return
@@ -296,12 +297,13 @@ func _input(event: InputEvent) -> void:
 		_capturing_action = StringName("")
 		return
 	var desc := GamepadBindings.from_event(event)
-	var cancel := event is InputEventKey and event.pressed and event.keycode == KEY_ESCAPE
-	if desc.is_empty() and not cancel:
+	var key := event as InputEventKey
+	if desc.is_empty() and key == null:
 		return
 	get_viewport().set_input_as_handled()
-	if cancel:
-		_capturing_action = StringName("")
+	if key != null:
+		if key.pressed and key.keycode == KEY_ESCAPE:
+			_capturing_action = StringName("")
 	elif not desc.is_empty():
 		var action := _capturing_action
 		_capturing_action = StringName("")

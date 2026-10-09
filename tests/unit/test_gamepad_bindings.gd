@@ -93,9 +93,13 @@ func test_load_bindings_valid_invalid_missing() -> void:
 	var cfg := ConfigFile.new()
 	cfg.set_value("input", "bind_fire", "b2")
 	cfg.set_value("input", "bind_jump", "xx") # 非法描述符 → 回落默认
+	cfg.set_value("input", "bind_crouch", "bx") # int("x")=0 的伪装 → 必须被识破回落默认
+	cfg.set_value("input", "bind_ads", "a5") # 缺符号位 → 非法
 	var b := GamepadBindings.load_bindings(cfg)
 	assert_eq(String(b[&"fire"]), "b2")
 	assert_eq(String(b[&"jump"]), "a5:1")
+	assert_eq(String(b[&"crouch"]), "a4:1")
+	assert_eq(String(b[&"ads"]), "b9")
 	assert_eq(String(b[&"toggle_settings"]), "b4") # 缺项回落默认
 
 func test_load_bindings_accepts_unbound() -> void:

@@ -27,7 +27,7 @@ const LABELS := {
 	&"toggle_settings": "开关设置",
 }
 
-## 出厂默认（ADR-0025）：砍掉 A/B——跳跃=RT、蹲=LT、开火=RB、开镜=LB、切枪=Y、开关设置=Back。
+## 出厂默认（ADR-0025）：砍掉 A/B——跳跃=RT、蹲=LT、开火=RB、开镜=LB、切换武器=Y、开关设置=Back。
 ## 与 project.godot 手写 InputMap 的手柄事件保持一致（运行时以本表回灌）。
 const DEFAULTS := {
 	&"jump": "a5:1",
@@ -125,13 +125,20 @@ static func load_bindings(cfg: ConfigFile) -> Dictionary:
 			out[action] = stored
 	return out
 
-## 描述符合法性（写入与读回共用同一守卫）。
+## 描述符合法性（写入与读回共用同一守卫）。数字部分必须真为整数——`int("x")` 会静默
+## 得 0，不设这道闸「bx」就伪装成 b0 混进存档。
 static func _valid(desc: String) -> bool:
 	if desc.is_empty():
 		return true
 	if desc.begins_with("b"):
-		return int(desc.substr(1)) >= 0
+		var n := desc.substr(1)
+		return n.is_valid_int() and int(n) >= 0
 	if desc.begins_with("a"):
 		var parts := desc.substr(1).split(":")
-		return parts.size() == 2 and int(parts[1]) in [-1, 1]
+		return (
+			parts.size() == 2
+			and parts[0].is_valid_int()
+			and parts[1].is_valid_int()
+			and int(parts[1]) in [-1, 1]
+		)
 	return false
