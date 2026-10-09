@@ -126,6 +126,8 @@ func _ready() -> void:
 	player.viewmodel.pose_applied.connect(_sync_player_fx)
 	settings_panel.opened.connect(_refresh_input)
 	settings_panel.closed.connect(_refresh_input)
+	# 主菜单提示随「间隔计时器」开关即时刷新（CONTEXT「主菜单」）：设置一关立刻重算。
+	settings_panel.closed.connect(main_menu.refresh_hint)
 	settings_panel.changed.connect(_apply_settings)
 	main_menu.start_pressed.connect(_on_menu_start)
 	main_menu.settings_pressed.connect(func() -> void: settings_panel.toggle())
@@ -163,6 +165,10 @@ func _process(delta: float) -> void:
 	_tick_hotkeys()
 
 func _tick_hotkeys() -> void:
+	# 改键采集期间热键全部让位（ADR-0025）：Back/Tab/Esc 是可绑键，此刻只归采集——
+	# 轮询读的是 Input 单例的既有动作状态，吞事件拦不住它，必须在源头短路。
+	if settings_panel.is_capturing():
+		return
 	if Input.is_action_just_pressed("toggle_fullscreen"):
 		_toggle_fullscreen()
 	if Input.is_action_just_pressed("toggle_settings"):

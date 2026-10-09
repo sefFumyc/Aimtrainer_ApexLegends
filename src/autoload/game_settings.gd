@@ -46,6 +46,9 @@ var mouse_sensitivity := InputSensitivity.MOUSE_SENSITIVITY_DEFAULT
 var gamepad_sensitivity := GAMEPAD_SENSITIVITY_DEFAULT
 ## 开镜灵敏度倍率（出厂默认 ×0.5，玩家实测定稿）。
 var ads_sens_mult := 0.5
+## 「键位设置」（ADR-0025）：动作 → 手柄绑定描述符（如 "b10" / "a5:1" / ""=未绑定）。
+## 与灵敏度同属全局共享，不进预设；描述符语义与回灌见 `GamepadBindings`。
+var gamepad_bindings: Dictionary = GamepadBindings.defaults()
 ## 开关项。
 var muzzle_flash_enabled := true
 var tracer_enabled := true
@@ -124,6 +127,8 @@ var presets := PresetStore.new()
 
 func _ready() -> void:
 	load_settings()
+	# 键位回灌 InputMap（ADR-0025）：只替换手柄事件、保留键鼠事件，启动即生效。
+	GamepadBindings.apply_all(gamepad_bindings)
 
 func load_settings() -> void:
 	var cfg := ConfigFile.new()
@@ -145,6 +150,7 @@ func load_settings() -> void:
 		GAMEPAD_SENSITIVITY_MAX
 	)
 	ads_sens_mult = cfg.get_value("input", "ads_sens_mult", ads_sens_mult)
+	gamepad_bindings = GamepadBindings.load_bindings(cfg)
 	graphics_quality = cfg.get_value("video", "quality", graphics_quality) as Quality
 	muzzle_flash_enabled = cfg.get_value("fx", "muzzle_flash", muzzle_flash_enabled)
 	tracer_enabled = cfg.get_value("fx", "tracer", tracer_enabled)
@@ -252,11 +258,32 @@ func recoil_cam_mult_for(weapon_id: StringName) -> float:
 func recoil_gun_mult_for(weapon_id: StringName) -> float:
 	return recoil_gun_rifle if Weapon.automatic(weapon_id) else recoil_gun_pistol
 
+# ---- 键位设置（ADR-0025）----
+
+## 查某动作当前的绑定描述符（"" = 未绑定）。
+func gamepad_binding_of(action: StringName) -> String:
+	return String(gamepad_bindings.get(action, ""))
+
+## 改绑一个动作：抢占（同键从其他动作摘除）→ 回灌 InputMap → 落盘。
+func set_gamepad_binding(action: StringName, desc: String) -> void:
+	GamepadBindings.steal(gamepad_bindings, action, desc)
+	gamepad_bindings[action] = desc
+	GamepadBindings.apply_all(gamepad_bindings)
+	save_settings()
+
+## 恢复默认手柄键位（页级唯一恢复口）。
+func reset_gamepad_bindings() -> void:
+	gamepad_bindings = GamepadBindings.defaults()
+	GamepadBindings.apply_all(gamepad_bindings)
+	save_settings()
+
 func save_settings() -> void:
 	var cfg := ConfigFile.new()
 	cfg.set_value("input", "mouse_sensitivity", mouse_sensitivity)
 	cfg.set_value("input", "gamepad_sensitivity", gamepad_sensitivity)
 	cfg.set_value("input", "ads_sens_mult", ads_sens_mult)
+	for action in GamepadBindings.ACTIONS:
+		cfg.set_value("input", "bind_" + String(action), String(gamepad_bindings.get(action, "")))
 	cfg.set_value("video", "quality", graphics_quality)
 	cfg.set_value("fx", "muzzle_flash", muzzle_flash_enabled)
 	cfg.set_value("fx", "tracer", tracer_enabled)

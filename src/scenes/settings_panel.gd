@@ -36,6 +36,9 @@ var _slide_jump_prob_row: HBoxContainer
 var _jump_check: CheckButton
 var _jump_min_slider: HSlider
 var _jump_max_slider: HSlider
+## 「键位」页（ADR-0025）：动作 → 显示按钮；正在采集改键的动作（空 = 非采集态）。
+var _bind_buttons := {}
+var _capturing_action := StringName("")
 
 ## prop → 控件：切预设后按需回灌数值（`set_value_no_signal` 避免反过来再写一遍）。
 var _controls := {}
@@ -90,6 +93,7 @@ func _build() -> void:
 	_build_avoidance_page(_page(tabs, "躲避与移动"))
 	_build_video_page(_page(tabs, "画面与输入"))
 	_build_recoil_page(_page(tabs, "后坐力"))
+	_build_bindings_page(_page(tabs, "键位"))
 	_build_timer_page(_page(tabs, "计时器"))
 	_build_preset_page(_page(tabs, "预设"))
 
@@ -238,6 +242,71 @@ func _build_recoil_page(page: VBoxContainer) -> void:
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	hint.text = "枪械抖动 = 枪模后坐与上抬的幅度倍率；相机抖动 = 视角踢动与水平甩动的幅度倍率。0 为完全关闭，出厂默认即实测定稿手感；对下一发立即生效。"
 	page.add_child(hint)
+
+## 「键位」分页（ADR-0025）：六个动作各一行（当前键友好名即按钮），点击进入采集态——
+## 按下手柄按键或扳机完成绑定；单一绑定模型，冲突抢占；页级恢复默认。键鼠绑定固定不可改。
+func _build_bindings_page(page: VBoxContainer) -> void:
+	for action in GamepadBindings.ACTIONS:
+		var btn := Button.new()
+		btn.pressed.connect(_on_bind_pressed.bind(action))
+		_bind_buttons[action] = btn
+		page.add_child(_row(GamepadBindings.LABELS[action], btn))
+
+	var reset := Button.new()
+	reset.text = "恢复默认手柄键位"
+	reset.pressed.connect(_on_bindings_reset)
+	page.add_child(_row("", reset))
+
+	var hint := Label.new()
+	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	hint.text = "点击一项后按下手柄按键或扳机完成绑定；一个键只归一个动作，新绑定会把旧动作上的同键抢占为「未绑定」。Esc 或再点一次取消。键鼠键位固定；移动与视角走摇杆，无键位可言。"
+	page.add_child(hint)
+
+	_refresh_bindings()
+
+func _refresh_bindings() -> void:
+	for action in _bind_buttons:
+		var btn: Button = _bind_buttons[action]
+		btn.text = (
+			"按手柄任意键…（Esc 取消）"
+			if action == _capturing_action
+			else GamepadBindings.friendly(GameSettings.gamepad_binding_of(action))
+		)
+
+func _on_bind_pressed(action: StringName) -> void:
+	_capturing_action = StringName("") if _capturing_action == action else action
+	_refresh_bindings()
+
+func _on_bindings_reset() -> void:
+	_capturing_action = StringName("")
+	GameSettings.reset_gamepad_bindings()
+	_refresh_bindings()
+
+## 是否处于改键采集态：采集期间主场景热键全部让位（main._tick_hotkeys 据此短路），
+## 否则按 Back/Tab/Esc 改键会同时触发「开关设置 / 结束回合」。
+func is_capturing() -> bool:
+	return _capturing_action != StringName("")
+
+## 改键采集（ADR-0025）：`_input` 先于 GUI 拿到事件并吞掉，防止手柄键顺手触发聚焦中的
+## 控件。手柄按键与过阈值（0.6）的轴算有效绑定；Esc 取消；键鼠事件不劫持（点别处可换目标）。
+func _input(event: InputEvent) -> void:
+	if not is_capturing():
+		return
+	if not visible:
+		_capturing_action = StringName("")
+		return
+	var desc := GamepadBindings.from_event(event)
+	var cancel := event is InputEventKey and event.pressed and event.keycode == KEY_ESCAPE
+	if desc.is_empty() and not cancel:
+		return
+	get_viewport().set_input_as_handled()
+	if cancel:
+		_capturing_action = StringName("")
+	elif not desc.is_empty():
+		var action := _capturing_action
+		_capturing_action = StringName("")
+		GameSettings.set_gamepad_binding(action, desc)
+	_refresh_bindings()
 
 func _build_timer_page(page: VBoxContainer) -> void:
 	page.add_child(_row("间隔计时器", _bound_check(GameSettings.timer_enabled, &"timer_enabled", _on_timer_toggle)))

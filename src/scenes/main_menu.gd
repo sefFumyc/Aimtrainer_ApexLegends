@@ -33,12 +33,6 @@ func _build() -> void:
 	box.add_theme_constant_override("separation", 14)
 	center.add_child(box)
 
-	var title := Label.new()
-	title.text = "瞄准训练器"
-	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	title.add_theme_font_size_override("font_size", 34)
-	box.add_child(title)
-
 	var start_button := _button("开始对局")
 	start_button.pressed.connect(func() -> void: start_pressed.emit())
 	box.add_child(start_button)
@@ -59,11 +53,15 @@ func _button(text: String) -> Button:
 	button.custom_minimum_size = Vector2(260, 44)
 	return button
 
-## 显示主菜单；「开始」的提示随「间隔计时器」开关变化。
-func open() -> void:
-	visible = true
+## 「开始」的提示随「间隔计时器」开关变化。
+func refresh_hint() -> void:
 	_hint.text = (
 		"开始将进入计时会话（准备 → 游玩 → 休息）"
 		if GameSettings.timer_enabled
 		else "开始将进入普通对局（无尽练习）"
 	)
+
+## 显示主菜单；提示文案即时重算。
+func open() -> void:
+	visible = true
+	refresh_hint()
