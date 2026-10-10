@@ -666,7 +666,7 @@ func test_jump_dice_do_not_disturb_fire_sequence() -> void:
 			mismatch = true
 	assert_false(mismatch, "命中/失手序列逐发一致（跳跃骰独立随机源）")
 
-# ---- bot 空中机动（票 12 / ADR-0024）----
+# ---- bot 空中机动（票 12 / ADR-0024、ADR-0027）----
 
 ## 玩家每帧跟随 bot 正前方 dist 处：锁定面朝 yaw = π（侧向轴恒 ±x）、距离恒定。
 func follow_player(p: BotAi.Perception, bot: BotAi, dist := 120.0) -> void:
@@ -724,75 +724,129 @@ func test_air_cuts_forward_input() -> void:
 	assert_gt(absf(vz_takeoff), 60.0, "前置：起跳时带着明显的朝玩家分量（W 生效）")
 	assert_lt(absf(vz_late), 20.0, "空中前后输入归零：朝玩家分量被转回纯侧向")
 
-func test_air_flip_ascending_defers_to_apex() -> void:
-	# 上升期到点的自然变向：avoidance 状态照翻（挂起），输入维持起跳方向到最高点；
-	# apex（≈0.66s）后应用新方向，剩余下降期 6 rad/s 足以转过头。
+func test_air_flip_pinned_at_half_ascent() -> void:
+	# 升程内到点的自然变向钉到升程一半执行（ADR-0027）：到点帧（t≈0.35）只作废不翻向，
+	# 钉点（起跳≈0.30 + 0.18 ≈ 0.48，早于 apex≈0.66）才翻向并立刻切换输入——
+	# 剩余滞空 0.54s × 6 rad/s 足以转满 180°，落地前完成反向。
 	var bot := bot_at(Vector2(0.0, -120.0))
 	var p := jump_perception(0.3, 0.3)
 	bot.avoidance.dir = AvoidanceController.DIR_LEFT
-	bot.avoidance.flip_timer = 0.35 # flip_timer 自 spawn 起倒数：t≈0.35 到点（起跳 t≈0.3 后，仍在上升期）
+	bot.avoidance.flip_timer = 0.35 # flip_timer 自 spawn 起倒数：t≈0.35 到点（起跳 t≈0.30 后）
 	bot.avoidance.switch_timer = 999.0
-	var vx_mid := 0.0
+	var flip_at := -1.0
+	var dir_at_due := 0
 	var vx_late := 0.0
 	var elapsed := 0.0
 	while elapsed < 1.05:
 		follow_player(p, bot)
 		bot.update(0.01, p)
-		if elapsed >= 0.6 and elapsed < 0.61:
-			vx_mid = bot.sim.velocity().x
+		if flip_at < 0.0 and bot.avoidance.dir == AvoidanceController.DIR_RIGHT:
+			flip_at = elapsed
+		if elapsed >= 0.42 and elapsed < 0.43:
+			dir_at_due = bot.avoidance.dir
+		if elapsed >= 0.80 and elapsed < 0.81:
+			vx_late = bot.sim.velocity().x
+		elapsed += 0.01
+	assert_eq(dir_at_due, AvoidanceController.DIR_LEFT, "到点帧只作废：变向内容不在到点生效")
+	assert_gt(flip_at, 0.44, "钉点在升程一半（起跳≈0.30 + 0.18），不在到点帧（≈0.35）")
+	assert_lt(flip_at, 0.62, "钉点早于 apex（≈0.66）")
+	assert_lt(vx_late, 0.0, "钉点后 0.32s 速度已越过 90° 反向（旧 apex 规则此刻仍朝起跳方向）")
+
+func test_air_flip_descending_due_also_pinned() -> void:
+	# 下降期到点不再丢弃（ADR-0027）：只要起跳沿预读命中（剩余 ≤ 滞空时长），下降期原定的
+	# 到点同样钉到升程一半执行——到点帧（t≈0.80）不翻、钉点（≈0.48）翻；计时器不动，
+	# 原定到点在空中走「作废重抽」。
+	var bot := bot_at(Vector2(0.0, -120.0))
+	var p := jump_perception(0.3, 0.3)
+	bot.avoidance.dir = AvoidanceController.DIR_LEFT
+	bot.avoidance.flip_timer = 0.8 # t≈0.80 到点：旧规则属下降期（apex≈0.66、落地≈1.02 之间）
+	bot.avoidance.switch_timer = 999.0
+	var flip_at := -1.0
+	var timer_after_pin := -1.0
+	var timer_after_reroll := -1.0
+	var prev_timer := 999.0
+	var vx_late := 0.0
+	var elapsed := 0.0
+	while elapsed < 1.05:
+		follow_player(p, bot)
+		bot.update(0.01, p)
+		if flip_at < 0.0 and bot.avoidance.dir == AvoidanceController.DIR_RIGHT:
+			flip_at = elapsed
+		elif flip_at >= 0.0 and timer_after_pin < 0.0:
+			timer_after_pin = bot.avoidance.flip_timer # 钉点后第一帧的计时器读数
+		if prev_timer <= 0.02 and bot.avoidance.flip_timer > 0.1 and timer_after_reroll < 0.0:
+			timer_after_reroll = bot.avoidance.flip_timer # 到点作废后的重抽值
+		prev_timer = bot.avoidance.flip_timer
 		if elapsed >= 1.0:
 			vx_late = bot.sim.velocity().x
 		elapsed += 0.01
-	assert_ne(bot.avoidance.dir, AvoidanceController.DIR_LEFT, "到点已翻向（挂起的是应用时机）")
-	assert_gt(vx_mid, 150.0, "上升期输入维持起跳方向：速度仍朝 +x")
-	assert_lt(vx_late, 0.0, "apex 后应用新方向：下降期完成反向")
-
-func test_air_flip_descending_discarded() -> void:
-	# 下降期到点的自然变向被丢弃：不翻向、间隔照常重抽——整跳方向稳定，
-	# 落地帧输入与速度同向，不触发「转向衰减」急刹。
-	var bot := bot_at(Vector2(0.0, -120.0))
-	var p := jump_perception(0.3, 0.3)
-	bot.avoidance.dir = AvoidanceController.DIR_LEFT
-	bot.avoidance.flip_timer = 0.8 # t≈0.80 到点：apex（≈0.66）之后、落地（≈1.02）之前
-	bot.avoidance.switch_timer = 999.0
-	var elapsed := 0.0
-	var vx_late := 0.0
-	while elapsed < 1.0:
-		follow_player(p, bot)
-		bot.update(0.01, p)
-		if elapsed >= 0.95:
-			vx_late = bot.sim.velocity().x
-		elapsed += 0.01
-	assert_eq(bot.avoidance.dir, AvoidanceController.DIR_LEFT, "下降期到点不翻向")
-	# 作废也照常重抽：重抽值落在当前模式的变向区间内（±一帧 dt 容差）
+	assert_gt(flip_at, 0.44, "下降期原定的到点提前到升程一半（≈0.48）执行")
+	assert_lt(flip_at, 0.62, "早于 apex（≈0.66）")
+	# 钉点后第一帧读数 = 原定到点(0.8) − 实际钉点时刻 − 两帧 dt（钉点帧与捕获帧各减一次）：
+	# 精确等式证明「不动也不重抽」——重抽值只会落在模式区间 [0.2, 1.0]，与读数无关。
+	assert_almost_eq(timer_after_pin, 0.8 - flip_at, 0.021, "钉点不动计时器：仍朝原定到点（0.8s）倒数")
 	var range_lo: float = AvoidanceController.STRAFE_MIN[bot.avoidance.mode]
-	assert_gt(bot.avoidance.flip_timer, range_lo - 0.011, "变向间隔照常重抽（作废不占位）")
-	assert_gt(vx_late, 150.0, "整跳方向稳定：速度仍朝起跳方向")
+	var range_hi: float = AvoidanceController.STRAFE_MAX[bot.avoidance.mode]
+	assert_gte(timer_after_reroll, range_lo - 0.011, "原定到点在空中作废，间隔照常重抽")
+	assert_lte(timer_after_reroll, range_hi + 0.011, "重抽落在当前模式区间")
+	assert_eq(bot.avoidance.dir, AvoidanceController.DIR_RIGHT, "到点作废不翻回：方向保持钉点那一次")
+	assert_lt(vx_late, 0.0, "整跳反向完成")
 
-func test_air_flip_armed_second_due_discarded() -> void:
-	# 上升期挂起一次后，同一滞空内再到的点作废（一次滞空最多挂起一个）：
-	# 第二次不翻向，apex 应用的仍是第一次挂起的方向（覆盖语义会翻回并保持旧方向）。
+func test_air_flip_second_due_discarded() -> void:
+	# 钉点执行后同一滞空内再到的点作废（一次滞空一次，ADR-0027）：第二次到点不翻向、
+	# 间隔照常重抽，方向保持钉点应用的那一次。
 	var bot := bot_at(Vector2(0.0, -120.0))
 	var p := jump_perception(0.3, 0.3)
 	bot.avoidance.dir = AvoidanceController.DIR_LEFT
-	bot.avoidance.flip_timer = 0.35 # 第一次到点 t≈0.35（上升期）→ 挂起，LEFT→RIGHT
+	bot.avoidance.flip_timer = 0.35 # 第一次到点 t≈0.35（升程内）→ 作废；钉点 t≈0.48 → RIGHT
 	bot.avoidance.switch_timer = 999.0
-	var armed_seen := false
+	var pinned_seen := false
+	var rerolled := -1.0
+	var prev_timer := 999.0
+	var vx_late := 0.0
 	var elapsed := 0.0
 	while elapsed < 1.05:
 		follow_player(p, bot)
 		bot.update(0.01, p)
-		if bot.avoidance.dir == AvoidanceController.DIR_RIGHT and not armed_seen:
-			armed_seen = true
-			bot.avoidance.flip_timer = 0.05 # 压第二次到点 t≈0.40，仍在上升期（<0.66）
+		if not pinned_seen and bot.avoidance.dir == AvoidanceController.DIR_RIGHT:
+			pinned_seen = true
+			bot.avoidance.flip_timer = 0.05 # 压第二次到点 t≈0.53，仍在空中（<1.02）
+		elif pinned_seen and rerolled < 0.0 and prev_timer <= 0.02 and bot.avoidance.flip_timer > 0.1:
+			rerolled = bot.avoidance.flip_timer # 第二次到点的作废重抽
+		prev_timer = bot.avoidance.flip_timer
+		if elapsed >= 1.0:
+			vx_late = bot.sim.velocity().x
 		elapsed += 0.01
-	assert_true(armed_seen, "前置：第一次到点已挂起翻向")
-	assert_eq(bot.avoidance.dir, AvoidanceController.DIR_RIGHT, "挂起中再到点作废：不再翻回")
-	assert_lt(bot.sim.velocity().x, 0.0, "apex 应用的是第一次挂起的方向")
+	assert_true(pinned_seen, "前置：钉点已翻向")
+	assert_gt(rerolled, 0.0, "前置：第二次到点已发生（作废重抽）")
+	var range_lo: float = AvoidanceController.STRAFE_MIN[bot.avoidance.mode]
+	var range_hi: float = AvoidanceController.STRAFE_MAX[bot.avoidance.mode]
+	assert_gte(rerolled, range_lo - 0.011, "作废照常重抽")
+	assert_lte(rerolled, range_hi + 0.011, "重抽落在当前模式区间")
+	assert_eq(bot.avoidance.dir, AvoidanceController.DIR_RIGHT, "一次滞空一次：不再翻回")
+	assert_lt(vx_late, 0.0, "钉点方向保持到落地")
+
+func test_air_flip_not_armed_when_due_beyond_air() -> void:
+	# 起跳沿预读未命中（剩余 > 滞空时长）：空中无变向——整跳方向稳定，到点落在地面照常。
+	var bot := bot_at(Vector2(0.0, -120.0))
+	var p := jump_perception(0.3, 0.3)
+	bot.avoidance.dir = AvoidanceController.DIR_LEFT
+	bot.avoidance.flip_timer = 3.0 # 起跳（t≈0.30）时剩余 ≈2.7 > 0.724 → 不预约
+	bot.avoidance.switch_timer = 999.0
+	var vx_late := 0.0
+	var elapsed := 0.0
+	while elapsed < 1.05:
+		follow_player(p, bot)
+		bot.update(0.01, p)
+		if elapsed >= 1.0:
+			vx_late = bot.sim.velocity().x
+		elapsed += 0.01
+	assert_eq(bot.avoidance.dir, AvoidanceController.DIR_LEFT, "预读未命中：空中无变向")
+	assert_gt(vx_late, 150.0, "整跳方向稳定：速度保持起跳方向")
 
 func test_air_block_flip_immediate_mid_air() -> void:
-	# 防撞翻向（on_blocked）不受分段管制：上升期翻向当帧生效——快照同步，
-	# 不被「上升期喂起跳方向」的快照机制滞留到 apex（守恒测试：现实现即绿）。
+	# 防撞翻向（on_blocked）不受钉点管制：上升期翻向当帧生效——空中侧向直读
+	# avoidance.dir，不被预约/钉点机制滞留（守恒测试：现实现即绿）。
 	var bot := bot_at(Vector2(0.0, -120.0))
 	var p := jump_perception(0.3, 0.3)
 	bot.avoidance.dir = AvoidanceController.DIR_LEFT
@@ -814,7 +868,8 @@ func test_air_block_flip_immediate_mid_air() -> void:
 	assert_lt(vx_after, 100.0, "翻向当帧起速度转向新方向（不被快照滞留）")
 
 func test_air_dodge_flip_immediate_mid_air() -> void:
-	# 受击躲避不受分段管制：上升期躲避翻向当帧生效（快照同步，守恒测试：现实现即绿）。
+	# 受击躲避不受钉点管制：上升期躲避翻向当帧生效（空中侧向直读 avoidance.dir，
+	# 守恒测试：现实现即绿）。
 	var bot := bot_at(Vector2(0.0, -120.0))
 	var p := jump_perception(0.3, 0.3)
 	p.dodge_chance = 1.0

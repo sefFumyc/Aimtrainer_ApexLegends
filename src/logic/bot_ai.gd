@@ -32,6 +32,12 @@ const FLIP_COMMIT := 0.3
 ## 物理实际位移低于纯逻辑步长的这个比例即视为「被挡住」。
 const BLOCK_RATIO := 0.5
 
+## 空中变向钉点（票 12 / ADR-0027）：预读窗 = 滞空时长（平地抛体 2v/g）；
+## 钉点 = 升程一半，此刻垂直速度降到初速一半——之后剩余滞空仍够 6 rad/s 转满 180°，
+## 落地不触发「转向衰减」急刹。
+const AIR_TIME := 2.0 * MovementSimulator.JUMP_VELOCITY / MovementSimulator.GRAVITY
+const AIR_FLIP_VZ := 0.5 * MovementSimulator.JUMP_VELOCITY
+
 ## 「bot 滑铲」（票 09 / ADR-0016）：注入初速定稿 399 u/s——玩家看不见前摇，直接满速滑出。
 const SLIDE_INJECT_SPEED := 399.0
 ## 滑行时长随机窗口（秒）：到点站起恢复常规躲避。
@@ -97,10 +103,10 @@ var _slide_dir := Vector2.ZERO ## 本次滑铲的世界方向（起步转身段�
 var _slide_face_from := 0.0 ## 滑铲起始朝向（起步段从这里插值到滑行方向，ADR-0017）
 var _jump_rng: RandomNumberGenerator ## 跳跃骰独立随机源：不污染开火/滑铲序列（ADR-0023）
 var _jump_wait := -1.0 ## 距下一次跳跃判定的秒数；<0 = 待落窗（spawn 后首帧重抽首跳间隔）
-## bot 空中机动三态（票 12 / ADR-0024）：
-var _air_strafe := 0.0 ## 空中侧向快照：起跳沿锁定当前方向，apex 沿与安全翻向处跟进
-var _air_armed := false ## 上升期已挂起一个待应用的自然变向（挂起唯一，后到作废）
+## bot 空中机动状态（票 12 / ADR-0027）：
+var _air_armed := false ## 起跳沿预读成立的本跳空中变向预约（钉到升程一半执行，一次滞空一次）
 var _air_prev := false ## 上一帧是否滞空（起跳 / 落地沿检测）
+var _air_rising_prev := false ## 上一帧是否上升期（连跳帧级滞空连成一段时的段内起跳沿检测）
 
 ## `probe` 签名 `(origin: Vector2, dir: Vector2, length: float) -> bool`，可为空（则只做解析边界探测）。
 func _init(rng: RandomNumberGenerator, config: AvoidanceController.Config, probe := Callable()) -> void:
@@ -126,9 +132,9 @@ func spawn(at: Vector2) -> void:
 	_slide_jump = false
 	_slide_cd = 0.0
 	_jump_wait = -1.0
-	_air_strafe = 0.0
 	_air_armed = false
 	_air_prev = false
+	_air_rising_prev = false
 	avoidance.spawn()
 
 ## 清除攻击锁定与两项计时（玩家重生时调用）：bot 之后重新按视锥计时。
@@ -142,25 +148,25 @@ func update(dt: float, p: Perception) -> Array:
 		respawn_left = maxf(0.0, respawn_left - dt)
 		return shots
 
-	# 空中机动沿检测（票 12 / ADR-0024）：起跳沿锁定侧向快照；落地沿清挂起；
-	# 多跳连跳帧级 airborne 连成一段（无落地沿）→ 挂起清零改挂 apex 沿：过最高点即消费挂起的
-	# 变向（快照跟进到已翻方向）。快照记录先于本帧变向判定（起跳沿先跑）。
+	# 空中机动沿检测（票 12 / ADR-0027）：起跳沿预读变向计时器——剩余 ≤ 滞空时长则本跳
+	# 空中变向预约成立，钉到升程一半（vz 降至初速一半）执行；落地沿清预约。多跳连跳帧级
+	# airborne 连成一段（无起落沿）→ 段内起跳沿用上升期恢复沿检测（vz 由 ≤0 翻正即新跳）。
 	var air := sim.airborne()
-	var rising := air and sim.vertical_speed() > 0.0
-	if air and not _air_prev:
-		_air_strafe = float(avoidance.dir)
-		_air_armed = false
+	var vz := sim.vertical_speed()
+	var rising := air and vz > 0.0
+	if air and (not _air_prev or (rising and not _air_rising_prev)):
+		_air_armed = avoidance.flip_timer <= AIR_TIME
 	elif not air and _air_prev:
 		_air_armed = false
-	elif _air_armed and not rising:
+	elif air and _air_armed and rising and vz <= AIR_FLIP_VZ:
+		# 钉点执行（ADR-0027）：翻向 + 掷前后分量 + 清时钟；变向计时器本身不动，
+		# 原定到点照旧走到、在空中走「作废重抽」通道——重抽时机与地面节奏零偏移。
 		_air_armed = false
-		_air_strafe = float(avoidance.dir)
+		avoidance.pinned_flip()
+	_air_rising_prev = rising
 	_air_prev = air
-	# 自然变向分段（ADR-0024）：空中挂起中后到作废、下降期丢弃；地面与空中上升期未挂起照常。
-	var allow := not (air and (_air_armed or not rising))
-	var flipped := avoidance.update(dt, allow)
-	if flipped and air:
-		_air_armed = true
+	# 空中到点一律作废重抽（预约的变向走钉点、不经计时器到点）；地面照常。
+	avoidance.update(dt, not air)
 	_flip_hold = maxf(0.0, _flip_hold - dt)
 	var pos := sim.position()
 	# 「朝向」= 指向玩家的水平方向（yaw 绕 +Y 右旋，前向 world = (-sin, -cos)）；
@@ -193,13 +199,12 @@ func update(dt: float, p: Perception) -> Array:
 		strafe = inward.x
 		fwd = inward.y
 	else:
-		# 空中机动（票 12 / ADR-0024）：前后输入归零——空中无加减速，前向输入只会把速度
-		# 整体拉向面朝方向（bot 面朝玩家 = 空中朝玩家窜）；侧向上升期喂起跳快照
-		# （自然变向挂起到最高点）、下降期喂当前方向（已翻即已应用，丢弃者方向未变）。
+		# 空中机动（票 12 / ADR-0027）：前后输入归零——空中无加减速，前向输入只会把速度
+		# 整体拉向面朝方向（bot 面朝玩家 = 空中朝玩家窜）；侧向直读当前方向——预约变向已在
+		# 升程一半钉点生效，防撞/躲避翻向当帧同步，快照机制随 ADR-0024 分段规则退役。
 		# 贴墙内拐分支整体豁免（安全行为优先），本覆盖只在常规路径生效。
 		if air:
 			fwd = 0.0
-			strafe = _air_strafe if rising else float(avoidance.dir)
 		# 前向探测（ADR-0005）：提前变向，复用撞墙反向的优惠语义。
 		# 承诺窗口内不翻——两个侧向都被探到受阻时，每帧翻向会把速度抖没。
 		var probe_len := _probe_length(p)
@@ -232,9 +237,9 @@ func take_damage(damage: int, p: Perception) -> bool:
 		_sliding = false
 		_slide_jump = false
 		_jump_wait = -1.0
-		_air_strafe = 0.0
 		_air_armed = false
 		_air_prev = false
+		_air_rising_prev = false
 		_reset_fire()
 		return true
 	_try_dodge(p)
@@ -331,12 +336,10 @@ func _handle_walls() -> void:
 	if _pushes_outward(pos, _strafe_dir_vec(avoidance.dir, sim.get_facing())):
 		_wall_flip()
 
-## 「撞墙反向」统一入口（票 12 / ADR-0024）：翻向 + 空中侧向快照同步。
-## 安全纠正（前向探测 / 贴墙外推 / 物理受阻）不受空中变向分段管制，当帧立即生效；
-## 不同步快照的话，上升期的翻向会被旧快照滞留到 apex 才体现（违反「立即生效」）。
+## 「撞墙反向」统一入口（票 12 / ADR-0024）：安全纠正（前向探测 / 贴墙外推 / 物理受阻）
+## 不受空中变向钉点管制，翻向当帧生效——空中侧向直读 avoidance.dir，无需额外同步。
 func _wall_flip() -> void:
 	avoidance.wall_flip()
-	_air_strafe = float(avoidance.dir)
 
 ## 「侧向」方向在世界坐标下的单位向量（相对自身朝向，与移动模型的 right 轴约定一致）。
 func _strafe_dir_vec(dir: int, yaw: float) -> Vector2:
@@ -483,9 +486,9 @@ func _try_dodge(p: Perception) -> void:
 	if pos.length() >= MovementSimulator.ARENA_RADIUS - WALL_EPS:
 		if _pushes_outward(pos, _strafe_dir_vec(-avoidance.dir, sim.get_facing())):
 			return
-	# 躲避是方向确定事件（ADR-0024）：空中翻向立即生效，同步侧向快照（同 _wall_flip）。
-	if avoidance.dodge(chance):
-		_air_strafe = float(avoidance.dir)
+	# 躲避是方向确定事件（ADR-0024 / 0027）：空中翻向立即生效——空中侧向直读
+	# avoidance.dir（快照已退役），无需同步。
+	avoidance.dodge(chance)
 
 # ---- 开火 ----
 
