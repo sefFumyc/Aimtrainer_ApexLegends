@@ -666,6 +666,247 @@ func test_jump_dice_do_not_disturb_fire_sequence() -> void:
 			mismatch = true
 	assert_false(mismatch, "命中/失手序列逐发一致（跳跃骰独立随机源）")
 
+# ---- bot 跳跃满速门 + RAS（票 13 / ADR-0028）----
+
+## 跑到首次离地为止，返回 `[起跳时刻, 起跳瞬间速率]`；`seconds` 内未离地返回 [-1.0, 0.0]。
+func first_takeoff(bot: BotAi, p: BotAi.Perception, seconds: float) -> Array:
+	var was_air := false
+	var elapsed := 0.0
+	while elapsed < seconds:
+		bot.update(0.01, p)
+		if bot.sim.airborne() and not was_air:
+			return [elapsed + 0.01, bot.sim.speed()]
+		was_air = bot.sim.airborne()
+		elapsed += 0.01
+	return [-1.0, 0.0]
+
+func test_jump_pends_until_max_speed() -> void:
+	# 满速门（普适无开关）：静止起跑约 0.14s 才满速——0.05s 首跳到点未满速 → 挂起，
+	# 满速瞬间才跳；旧语义 0.05s 即离地。起跳瞬间必须已达持枪满速（ε=1.0）。
+	var bot := bot_at(Vector2(0.0, -120.0))
+	var result := first_takeoff(bot, jump_perception(0.05, 0.05), 1.0)
+	assert_gt(result[0], 0.10, "未满速的到点被挂起顺延（旧语义 0.05s 即跳）")
+	assert_gte(result[1], GUN_CAP - 1.0, "起跳瞬间已达持枪满速（满速门 ε=1.0）")
+
+func test_ads_shrinks_the_speed_gate() -> void:
+	# 满速门每帧按当前开镜状态取修正器：开镜档目标更低（130.1），满速时刻早于持枪档。
+	var bot := bot_at(Vector2(0.0, -120.0))
+	var p := jump_perception(0.05, 0.05)
+	p.ads = true
+	var result := first_takeoff(bot, p, 1.0)
+	assert_gt(result[0], 0.045, "开镜档未满速同样挂起")
+	assert_gte(result[1], ADS_CAP - 1.0, "起跳瞬间达开镜档满速")
+	assert_lt(result[0], 0.14, "开镜档目标更低：满速时刻早于持枪档（约 0.057s vs 0.14s）")
+
+func test_ras_prob_zero_jumps_immediately_when_fast() -> void:
+	# P=0：不掷 RAS 骰（序列与旧版逐发一致的前提）——满速状态下到点当帧起跳、无挂起。
+	var bot := bot_at(Vector2(0.0, -120.0))
+	var p := perception()
+	# 热身前压住变向/模式切换：0.3s 热身窗口内若发生自然变向，热身结束时仍在恢复期（未满速）。
+	bot.avoidance.flip_timer = 999.0
+	bot.avoidance.switch_timer = 999.0
+	run(bot, p, 0.3) # 热身（跳跃关）：纯加速到满速
+	p.jump_enabled = true
+	p.jump_min = 0.05
+	p.jump_max = 0.05
+	var jumped := false
+	var elapsed := 0.0
+	while elapsed < 0.3:
+		bot.update(0.01, p)
+		if bot.sim.airborne():
+			jumped = true
+			break
+		elapsed += 0.01
+	assert_true(jumped, "满速 + P=0：到点立即起跳")
+	assert_lt(elapsed, 0.10, "首跳到点（0.05s）当帧离地，无挂起延迟")
+
+func test_ras_waits_for_direction_flip_then_max_speed() -> void:
+	# P=1 + 已满速到点 → RAS 挂起等变向：压住变向计时器期间永不跳；手动翻向（dir 翻转
+	# 统一口径，模拟躲避/撞墙翻向）→ 等满速恢复 → 恢复瞬间起跳且仍是满速跳。
+	var bot := bot_at(Vector2(0.0, -120.0))
+	var p := jump_perception(0.05, 0.05)
+	p.jump_ras_prob = 1.0
+	p.jump_enabled = false
+	bot.avoidance.flip_timer = 5.0 # 压住自然变向（热身前压：0.3s 热身内变向会让热身停在恢复期）
+	bot.avoidance.switch_timer = 5.0 # 压住模式切换（切换会重抽变向计时）
+	run(bot, p, 0.3) # 热身：纯加速到满速
+	p.jump_enabled = true
+	var jumped := false
+	var elapsed := 0.0
+	while elapsed < 0.4 and not jumped:
+		bot.update(0.01, p)
+		jumped = bot.sim.airborne()
+		elapsed += 0.01
+	assert_false(jumped, "RAS 等变向阶段：dir 未翻转不跳")
+	bot.avoidance.dir = -bot.avoidance.dir # 手动翻向 → 进等满速阶段（速度被转向衰减压低）
+	var result := first_takeoff(bot, p, 1.0)
+	assert_gt(result[0], 0.0, "变向后满速瞬间起跳")
+	assert_gte(result[1], GUN_CAP - 1.0, "RAS 跳仍是满速跳")
+
+func test_ras_in_recovery_goes_straight_to_speed_wait() -> void:
+	# P=1 + 到点时未满速（起跑加速段）→ 不等下一次变向、直接等满速（Q8=A）：
+	# 错误实现（一律等变向）会让起跳落到 flip_timer 自然到点之后（>0.5s）。
+	var bot := bot_at(Vector2(0.0, -120.0))
+	var p := jump_perception(0.05, 0.05)
+	p.jump_ras_prob = 1.0
+	var result := first_takeoff(bot, p, 1.0)
+	assert_gt(result[0], 0.10, "未满速到点挂起等满速")
+	assert_lt(result[0], 0.35, "不等下一次变向：满速瞬间即跳")
+
+func test_pending_discarded_when_los_drops() -> void:
+	# 0.05s 到点（未满速）→ 挂起；0.08s 视线被挡 → 挂起作废；0.30s 恢复视野不补跳
+	# （作废语义——计时器从冻结值继续倒数，下轮到点满速照常跳）。
+	var bot := bot_at(Vector2(0.0, -120.0))
+	var p := jump_perception(0.05, 0.05)
+	var jumped_while_blocked := false
+	var jumped_right_after_open := false
+	var jumped_later := false
+	var was_air := false
+	var elapsed := 0.0
+	while elapsed < 1.0 and not (jumped_while_blocked or jumped_right_after_open or jumped_later):
+		p.line_of_sight = elapsed < 0.08 or elapsed >= 0.30
+		bot.update(0.01, p)
+		if bot.sim.airborne() and not was_air:
+			if elapsed < 0.30:
+				jumped_while_blocked = true
+			elif elapsed < 0.33:
+				jumped_right_after_open = true
+			else:
+				jumped_later = true
+		was_air = bot.sim.airborne()
+		elapsed += 0.01
+	assert_false(jumped_while_blocked, "挂起中视线丢 → 作废不跳")
+	assert_false(jumped_right_after_open, "视野恢复不补跳（作废语义）")
+	assert_true(jumped_later, "下轮到点满速照常跳")
+
+func test_pending_timeout_discards() -> void:
+	# 挂起超 2s 作废（兜底）：0.05s 到点（未满速）挂起，挂起时钟拨到阈值边缘——
+	# 下一帧超时作废（哪怕随后爬到满速也不跳）；冻结计时器继续倒数、下轮到点照常判定。
+	var bot := bot_at(Vector2(0.0, -120.0))
+	var p := jump_perception(0.05, 0.05)
+	var elapsed := 0.0
+	while elapsed < 0.2 and not bot._jump_pending:
+		bot.update(0.01, p)
+		elapsed += 0.01
+	assert_true(bot._jump_pending, "前置：未满速到点进入挂起")
+	bot._jump_pend_t = BotAi.JUMP_PENDING_TIMEOUT - 0.005
+	var air_frames := 0
+	for i in 5:
+		bot.update(0.01, p)
+		air_frames += 1 if bot.sim.airborne() else 0
+	assert_false(bot._jump_pending, "超时作废：挂起解除")
+	assert_eq(air_frames, 0, "作废瞬间不跳")
+	var result := first_takeoff(bot, p, 1.0)
+	assert_gt(result[0], 0.0, "超时作废不排队：下轮到点满速照常跳")
+
+func test_pending_freezes_jump_timer() -> void:
+	# 挂起期间计时器冻结（Q9=A 零 RNG 消耗）：_jump_wait 保持到点时重抽的值不动，
+	# 挂起解除后从冻结值继续倒数。
+	var bot := bot_at(Vector2(0.0, -120.0))
+	var p := jump_perception(0.05, 0.05)
+	var elapsed := 0.0
+	while elapsed < 0.2 and not bot._jump_pending:
+		bot.update(0.01, p)
+		elapsed += 0.01
+	assert_true(bot._jump_pending, "前置：挂起中")
+	var frozen := bot._jump_wait
+	for i in 5: # 挂起 0.05s（0.14s 满速起跳前有 9 帧，取 5 帧窗口）
+		bot.update(0.01, p)
+		assert_eq(bot._jump_wait, frozen, "挂起期间计时器冻结")
+
+func test_pending_discarded_when_slide_starts() -> void:
+	# 挂起中进入滑铲 → 作废（ADR-0028 作废路径之一）；作废不跳。
+	var bot := bot_at(Vector2(0.0, -120.0))
+	var p := jump_perception(0.05, 0.05)
+	var elapsed := 0.0
+	while elapsed < 0.2 and not bot._jump_pending:
+		bot.update(0.01, p)
+		elapsed += 0.01
+	assert_true(bot._jump_pending, "前置：挂起中")
+	bot._sliding = true # 滑铲注入（ADR-0017 先例：公共触发链方向由 rng 决定，直接注入确定状态）
+	bot.update(0.01, p)
+	assert_false(bot._jump_pending, "挂起中进入滑铲 → 作废")
+	assert_false(bot.sim.airborne(), "作废瞬间不跳")
+
+func test_pending_discarded_on_death() -> void:
+	# 挂起中受致命伤 → 清挂起（跳跃时钟一并复位，「刷新」后从首抽重开）；
+	# 非致命受击不清挂起（躲避翻向反而是 RAS 等变向阶段的合法锚点）。
+	var bot := bot_at(Vector2(0.0, -120.0))
+	var p := jump_perception(0.05, 0.05)
+	var elapsed := 0.0
+	while elapsed < 0.2 and not bot._jump_pending:
+		bot.update(0.01, p)
+		elapsed += 0.01
+	assert_true(bot._jump_pending, "前置：挂起中")
+	assert_true(bot.take_damage(999, p), "致命一击")
+	assert_false(bot._jump_pending, "死亡清挂起")
+
+func test_pending_cleared_on_respawn() -> void:
+	# 「刷新」（spawn）清挂起并重抽首跳间隔（ADR-0028）。
+	var bot := bot_at(Vector2(0.0, -120.0))
+	var p := jump_perception(0.05, 0.05)
+	var elapsed := 0.0
+	while elapsed < 0.2 and not bot._jump_pending:
+		bot.update(0.01, p)
+		elapsed += 0.01
+	assert_true(bot._jump_pending, "前置：挂起中")
+	bot.spawn(Vector2(60.0, -120.0))
+	assert_false(bot._jump_pending, "刷新清挂起")
+	assert_lt(bot._jump_wait, 0.0, "刷新重抽首跳间隔（_jump_wait = -1 待首帧重抽）")
+
+func test_pending_survives_toggle_off_and_resumes() -> void:
+	# 跳跃开关关闭 → 计时器与挂起一并冻结（挂起保留）；重开后挂起继续（ADR-0028）。
+	var bot := bot_at(Vector2(0.0, -120.0))
+	var p := jump_perception(0.05, 0.05)
+	var elapsed := 0.0
+	while elapsed < 0.2 and not bot._jump_pending:
+		bot.update(0.01, p)
+		elapsed += 0.01
+	assert_true(bot._jump_pending, "前置：挂起中")
+	var frozen := bot._jump_wait
+	p.jump_enabled = false
+	for i in 5:
+		bot.update(0.01, p)
+	assert_true(bot._jump_pending, "开关关闭：挂起保留（冻结）")
+	assert_eq(bot._jump_wait, frozen, "开关关闭：计时器冻结")
+	p.jump_enabled = true
+	bot.update(0.01, p)
+	assert_true(bot._jump_pending, "重开后挂起继续")
+
+func test_ras_dice_do_not_disturb_fire_sequence() -> void:
+	# P=1（每轮到点都掷 RAS 骰）开火序列仍与无跳跃 bot 逐发一致：RAS 骰走跳跃独立源。
+	var a := bot_at(Vector2(0.0, -400.0))
+	var b := bot_at(Vector2(0.0, -400.0))
+	var pa := perception()
+	pa.fire_enabled = true
+	pa.hit_rate = 50
+	pa.line_of_sight = true
+	var pb := perception()
+	pb.fire_enabled = true
+	pb.hit_rate = 50
+	pb.line_of_sight = true
+	pb.jump_enabled = true
+	pb.jump_min = 0.05
+	pb.jump_max = 0.1
+	pb.jump_ras_prob = 1.0
+	var seq_a: Array = []
+	var seq_b: Array = []
+	var elapsed := 0.0
+	while elapsed < 5.0:
+		aim_at(pa, a)
+		aim_at(pb, b)
+		for s in a.update(0.01, pa):
+			seq_a.append(s)
+		for s in b.update(0.01, pb):
+			seq_b.append(s)
+		elapsed += 0.01
+	assert_eq(seq_a.size(), seq_b.size(), "开火次数一致")
+	var mismatch := false
+	for i in seq_a.size():
+		if seq_a[i] != seq_b[i]:
+			mismatch = true
+	assert_false(mismatch, "命中/失手序列逐发一致（RAS 骰不污染开火序列）")
+
 # ---- bot 空中机动（票 12 / ADR-0024、ADR-0027）----
 
 ## 玩家每帧跟随 bot 正前方 dist 处：锁定面朝 yaw = π（侧向轴恒 ±x）、距离恒定。

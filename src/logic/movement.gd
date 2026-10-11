@@ -38,6 +38,7 @@ const AIR_TURN_RATE := 6.0 ## 空中 / 滑铲转向速率上限（rad/s）
 const MAX_AIR_SPEED := 500.0 ## 空中 / 滑铲水平速度上限（覆盖铲跳 ≈480）
 const AIR_FRICTION_SLIDE_JUMP := 103.0 ## 滑铲跳跃独有的空中摩擦
 const SUBSTEP := 1.0 / 240.0 ## 固定子步
+const SPEED_EPSILON := 1.0 ## 满速判定容差（u/s，at_max_ground_speed 用，ADR-0028）
 
 const STICK_DEADZONE := 0.13 ## 左摇杆每轴死区（「摇杆离散」）
 const TURN_THRESHOLD := 0.03 ## ~1.7° 视为方向一致
@@ -542,6 +543,12 @@ func height() -> float:
 ## bot 铲跳的表现层抬升用它（ADR-0018）：视觉模型 / 命中体 / 枪口一起抬，移动碰撞不跟。
 func jump_height() -> float:
 	return _height_v
+
+## 是否已达地面行走满速（bot 跳跃满速门用，ADR-0028）：目标速度 = 基础速度 × 当前
+## 开镜状态的「速度修正器」（bot 永不疾跑，当前状态最大速度即此值）。
+## ε 容差覆盖子步离散误差（恢复段每子步爬升 ~1.6 u/s）。
+func at_max_ground_speed() -> bool:
+	return speed() >= _walk_target() - SPEED_EPSILON
 
 func state() -> String:
 	return _state

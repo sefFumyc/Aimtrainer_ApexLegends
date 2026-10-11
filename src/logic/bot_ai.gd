@@ -57,6 +57,10 @@ const SLIDE_TURN_SPEED := TAU
 ## 「瞄住」容差：滑铲中与玩家方向夹角 ≤10° 恢复开火（ADR-0017）。
 const SLIDE_AIM_TOL := deg_to_rad(10.0)
 
+## 跳跃挂起总超时（秒，票 13 / ADR-0028）：覆盖最坏情况（变向剩余 1.0s + 满速恢复 0.3s + 余量）；
+## 墙边反复翻向使「等满速」不断重置的场景由此兜底。
+const JUMP_PENDING_TIMEOUT := 2.0
+
 ## 每帧感知（由场景装配；纯逻辑测试直接构造）。
 class Perception:
 	var player_x := 0.0 ## 玩家水平位置
@@ -80,6 +84,7 @@ class Perception:
 	var jump_enabled := false ## 「bot 跳跃」开关（票 11 / ADR-0023）
 	var jump_min := 4.0 ## 「跳跃间隔」下限（秒）
 	var jump_max := 12.0 ## 「跳跃间隔」上限（秒）
+	var jump_ras_prob := 0.0 ## 「RAS 概率」（抽中跳跃后延迟到变向满速瞬间起跳的概率，票 13 / ADR-0028）
 
 var sim := MovementSimulator.new()
 var avoidance: AvoidanceController
@@ -103,6 +108,12 @@ var _slide_dir := Vector2.ZERO ## 本次滑铲的世界方向（起步转身段�
 var _slide_face_from := 0.0 ## 滑铲起始朝向（起步段从这里插值到滑行方向，ADR-0017）
 var _jump_rng: RandomNumberGenerator ## 跳跃骰独立随机源：不污染开火/滑铲序列（ADR-0023）
 var _jump_wait := -1.0 ## 距下一次跳跃判定的秒数；<0 = 待落窗（spawn 后首帧重抽首跳间隔）
+## bot 跳跃挂起（票 13 / ADR-0028）：到点未满速或 RAS 掷中后进入挂起，等满速瞬间（或 RAS 先等
+## 变向）再跳。挂起期间跳跃计时器冻结（间隔已消费给挂起的跳跃），解除后从冻结值继续倒数。
+var _jump_pending := false ## 挂起中
+var _jump_wait_flip := false ## 挂起阶段：true = 等变向（RAS 掷中且已满速） / false = 等满速
+var _jump_pend_t := 0.0 ## 挂起已持续秒数（超 JUMP_PENDING_TIMEOUT 作废）
+var _jump_flip_ref := 0 ## 挂起开始时的 avoidance.dir（等变向阶段检测任何 dir 翻转）
 ## bot 空中机动状态（票 12 / ADR-0027）：
 var _air_armed := false ## 起跳沿预读成立的本跳空中变向预约（钉到升程一半执行，一次滞空一次）
 var _air_prev := false ## 上一帧是否滞空（起跳 / 落地沿检测）
@@ -132,6 +143,10 @@ func spawn(at: Vector2) -> void:
 	_slide_jump = false
 	_slide_cd = 0.0
 	_jump_wait = -1.0
+	_jump_pending = false
+	_jump_wait_flip = false
+	_jump_pend_t = 0.0
+	_jump_flip_ref = 0
 	_air_armed = false
 	_air_prev = false
 	_air_rising_prev = false
@@ -237,6 +252,10 @@ func take_damage(damage: int, p: Perception) -> bool:
 		_sliding = false
 		_slide_jump = false
 		_jump_wait = -1.0
+		_jump_pending = false
+		_jump_wait_flip = false
+		_jump_pend_t = 0.0
+		_jump_flip_ref = 0
 		_air_armed = false
 		_air_prev = false
 		_air_rising_prev = false
@@ -450,23 +469,70 @@ func _slide_dir_blocked(pos: Vector2, dir: Vector2, length: float) -> bool:
 # ---- bot 跳跃（票 11 / ADR-0023）----
 
 ## 推进「bot 跳跃」计时器，到点判定是否发本帧跳跃信号（一帧即逝，movement 普通跳分支接管）。
-## 门控：非滑铲（滑铲中的跳归铲跳管）、视线通畅（被挡时跳浪费频率配额）。
-## 空中到点**放行**（票 12 / ADR-0024 修订）：movement 的 `_pending_jump` 把信号锁存到落地帧消费——
-## 落地瞬间立即起跳（bhop），连跳节奏 = 滞空周期，地面间隙归零。到点不满足 → 本轮作废、
-## 立即重抽下一轮间隔，不排队等待。开关关闭时计时器冻结（重开后从原值继续倒数）。
+## 基础门控：非滑铲（滑铲中的跳归铲跳管）、视线通畅（被挡时跳浪费频率配额）。
+## 满速门 + RAS（票 13 / ADR-0028）：
+## - 地面到点未满速 → 挂起等满速瞬间；空中到点未满速**直接作废**（空中无加减速、模长恒定，
+##   永远等不到）；空中满速照旧放行锁存（bhop，票 12）——起跳满速则整条链逐跳免检。
+## - RAS 骰在满速门之前掷（仅概率 > 0 时消耗，P=0 跳跃 RNG 序列与旧版逐发一致）：
+##   掷中且已满速 → 挂起先等下一次「变向」（任何 dir 翻转，自然/躲避/撞墙统一）再等满速；
+##   掷中且未满速（恢复期）→ 直接等满速——恢复完成瞬间即「变向后满速瞬间」。
+## - 挂起期间计时器冻结（Q9：零额外 RNG 消耗），解除后从冻结值继续倒数；到点不满足 → 本轮
+##   作废、立即重抽下一轮间隔，不排队。开关关闭时计时器与挂起一并冻结（重开后从原值继续）。
 func _tick_jump(dt: float, p: Perception) -> bool:
 	if not p.jump_enabled:
 		return false
+	if _jump_pending:
+		return _tick_pending_jump(dt, p)
 	if _jump_wait < 0.0:
 		_jump_wait = _roll_jump_wait(p) # 「刷新」后的首帧：重抽首跳间隔，本轮不判定
 		return false
 	_jump_wait -= dt
 	if _jump_wait > 0.0:
 		return false
-	_jump_wait = _roll_jump_wait(p) # 跳了或作废都从这里起算下一轮
+	_jump_wait = _roll_jump_wait(p) # 跳了、作废或挂起都从这里起算下一轮
 	if _sliding or sim.state() == "sliding" or not p.line_of_sight:
 		return false
+	if sim.airborne():
+		# 空中到点：满速锁存（票 12 / ADR-0024）、未满速作废（票 13 / ADR-0028）。
+		# 不掷 RAS 骰——「等变向」在空中不成立（钉点翻向会假触发）。
+		return sim.at_max_ground_speed()
+	if p.jump_ras_prob > 0.0 and _jump_rng.randf() < p.jump_ras_prob:
+		# 已满速 → 等下一次变向；未满速（恢复期）→ 直接等满速（Q8：恢复完成瞬间即「变向满速瞬间」）
+		_begin_pending(sim.at_max_ground_speed())
+		return false
+	if not sim.at_max_ground_speed():
+		_begin_pending(false) # 满速门：未满速 → 挂起等满速瞬间
+		return false
 	return true
+
+## 进入跳跃挂起（ADR-0028）：记录 dir 快照、清零挂起时钟；计时器已在上游重抽并就此冻结。
+func _begin_pending(wait_flip: bool) -> void:
+	_jump_pending = true
+	_jump_wait_flip = wait_flip
+	_jump_pend_t = 0.0
+	_jump_flip_ref = avoidance.dir
+
+## 推进挂起中的跳跃（ADR-0028）：等变向 → 等满速 → 满速瞬间起跳。
+## 门控失效（滑铲 / 视线丢）或超时 → 作废（不重抽——计时器已冻结，解除后继续倒数到点再判）。
+func _tick_pending_jump(dt: float, p: Perception) -> bool:
+	_jump_pend_t += dt
+	if _sliding or sim.state() == "sliding" or not p.line_of_sight:
+		_jump_pending = false
+		return false
+	if _jump_pend_t >= JUMP_PENDING_TIMEOUT:
+		_jump_pending = false
+		return false
+	if _jump_wait_flip:
+		# RAS 等变向阶段：任何 dir 翻转（自然变向 / 躲避 / 撞墙翻向）→ 进等满速阶段。
+		# 空中钉点翻向不会出现——挂起中 bot 在地面、还没跳。
+		if avoidance.dir != _jump_flip_ref:
+			_jump_wait_flip = false
+		return false
+	# 等满速阶段：满速瞬间起跳（期间再被翻向抖掉速度则重新爬——条件本身就是速度达标）。
+	if sim.at_max_ground_speed():
+		_jump_pending = false
+		return true
+	return false
 
 ## 在「跳跃间隔」窗口内抽下一轮等待秒数（min > max 时归一，防设置手滑）。
 func _roll_jump_wait(p: Perception) -> float:

@@ -10,8 +10,8 @@
 class_name PresetStore
 extends RefCounted
 
-## 26 项训练参数（票 11 起）：「目标与 bot」6 项 + 「躲避与移动」13 项 + 「bot 滑铲」4 项
-## + 「bot 跳跃」3 项。不含「武器」、灵敏度 / 画面质量 / 计时器 / 场地布局——这些全局共享。
+## 27 项训练参数（票 13 起）：「目标与 bot」6 项 + 「躲避与移动」13 项 + 「bot 滑铲」4 项
+## + 「bot 跳跃」4 项。不含「武器」、灵敏度 / 画面质量 / 计时器 / 场地布局——这些全局共享。
 const FIELDS: Array[String] = [
 	"target_range",
 	"body_radius",
@@ -39,6 +39,7 @@ const FIELDS: Array[String] = [
 	"bot_jump_enabled",
 	"bot_jump_min",
 	"bot_jump_max",
+	"bot_jump_ras_prob",
 ]
 
 ## 核心六项：任一缺失即视为损坏预设。
@@ -79,9 +80,10 @@ const DEFAULTS := {
 	"bot_jump_enabled": true,
 	"bot_jump_min": 4.0,
 	"bot_jump_max": 12.0,
+	"bot_jump_ras_prob": 0.0,
 }
 
-## 预设名 → 26 项快照（String 键）。
+## 预设名 → 27 项快照（String 键）。
 var _presets := {}
 ## 当前选中的预设名；空串 = 默认预设（全局设置本身）。
 var _active := ""

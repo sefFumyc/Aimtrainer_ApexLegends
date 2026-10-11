@@ -113,6 +113,8 @@ var bot_slide_jump_prob := 0.5
 var bot_jump_enabled := true
 var bot_jump_min := 4.0
 var bot_jump_max := 12.0
+## 「RAS 概率」（票 13 / ADR-0028，默认 0）：抽中跳跃后延迟到变向满速瞬间起跳的概率。
+var bot_jump_ras_prob := 0.0
 ## 「吸血」（默认关）：命中方按本次伤害回血，封顶 600。
 var lifesteal_enabled := false
 ## 「间隔计时器」（默认关）：启用后主菜单「开始」进入计时会话。
@@ -203,6 +205,9 @@ func load_settings() -> void:
 	)
 	bot_jump_max = clampf(
 		cfg.get_value("bot", "jump_max", bot_jump_max), JUMP_INTERVAL_MIN, JUMP_INTERVAL_MAX
+	)
+	bot_jump_ras_prob = clampf(
+		cfg.get_value("bot", "jump_ras_prob", bot_jump_ras_prob), WEIGHT_MIN, WEIGHT_MAX
 	)
 	lifesteal_enabled = cfg.get_value("duel", "lifesteal", lifesteal_enabled)
 	timer_enabled = cfg.get_value("timer", "enabled", timer_enabled)
@@ -339,6 +344,7 @@ func save_settings() -> void:
 	cfg.set_value("bot", "jump_enabled", bot_jump_enabled)
 	cfg.set_value("bot", "jump_min", bot_jump_min)
 	cfg.set_value("bot", "jump_max", bot_jump_max)
+	cfg.set_value("bot", "jump_ras_prob", bot_jump_ras_prob)
 	cfg.set_value("duel", "lifesteal", lifesteal_enabled)
 	cfg.set_value("timer", "enabled", timer_enabled)
 	cfg.set_value("timer", "auto_adjust_radius", auto_adjust_radius)
