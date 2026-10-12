@@ -615,11 +615,13 @@ func _on_fullscreen_aspect(index: int) -> void:
 	_aspect_info.text = _fullscreen_aspect_text()
 	fullscreen_aspect_changed.emit()
 
-## 信息行文本：桌面分辨率 → 全屏换算结果（拉伸铺满）。
+## 信息行文本：桌面分辨率 → 全屏渲染分辨率（拉伸铺满；与桌面相等即原生直渲）。
 func _fullscreen_aspect_text() -> String:
 	var screen := DisplayServer.screen_get_size(DisplayServer.window_get_current_screen())
 	var full := GameSettings.fullscreen_resolution(screen, GameSettings.fullscreen_aspect)
-	return "桌面 %d×%d → 全屏 %d×%d（拉伸铺满）" % [screen.x, screen.y, full.x, full.y]
+	if full == screen:
+		return "桌面 %d×%d（原生 16:9 直渲）" % [screen.x, screen.y]
+	return "桌面 %d×%d → 渲染 %d×%d（横向拉伸铺满）" % [screen.x, screen.y, full.x, full.y]
 
 func _on_fire_enabled(on: bool) -> void:
 	_hit_rate_row.visible = on

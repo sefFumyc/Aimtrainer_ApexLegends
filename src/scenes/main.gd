@@ -182,32 +182,41 @@ func _tick_hotkeys() -> void:
 		_on_escape()
 
 ## F11 切换 窗口 ↔ 独占全屏（ADR-0019/0029）：会话级热键，不持久化、任何舞台可用。
-## 全屏分辨率按「全屏宽高比」档位算出（屏高为分母、16:aspect 算宽）；进全屏前记住
-## 窗口尺寸、退回时恢复。
+## Godot 4.7 的独占全屏**不做显示模式切换**（window_set_mode 强制窗口尺寸 = 屏幕分辨率，
+## ChangeDisplaySettings 零调用），16:10 档拉伸改走引擎内 content scale：
+## 按 16:10 渲染再横向拉满原生屏幕（CS/Apex stretched 语义）。进全屏前记住窗口
+## 尺寸、退回时恢复。
 func _toggle_fullscreen() -> void:
 	var window := get_window()
 	if window.mode == Window.MODE_EXCLUSIVE_FULLSCREEN:
 		window.mode = Window.MODE_WINDOWED
+		_apply_fullscreen_stretch(Vector2i.ZERO, Vector2i.ZERO) # 全零 = 无条件关拉伸
 		window.size = _pre_fullscreen_size
 		return
 	_pre_fullscreen_size = window.size
-	_set_fullscreen_resolution()
 	window.mode = Window.MODE_EXCLUSIVE_FULLSCREEN
+	var screen := DisplayServer.screen_get_size(window.current_screen)
+	_apply_fullscreen_stretch(screen, GameSettings.fullscreen_resolution(screen, GameSettings.fullscreen_aspect))
 
-## 「全屏宽高比」切档时由设置面板触发（ADR-0029）：正在独占全屏则立即按新档位重设
-## 分辨率；窗口化则仅由下次 F11 生效。重申一遍模式，让显示模式跟上新尺寸。
+## 「全屏宽高比」切档时由设置面板触发（ADR-0029）：正在独占全屏则立即按新档位
+## 重设引擎内拉伸；窗口化则仅由下次 F11 生效。
 func _apply_fullscreen_resolution() -> void:
 	if get_window().mode != Window.MODE_EXCLUSIVE_FULLSCREEN:
 		return
-	_set_fullscreen_resolution()
-	get_window().mode = Window.MODE_EXCLUSIVE_FULLSCREEN
+	var screen := DisplayServer.screen_get_size(get_window().current_screen)
+	_apply_fullscreen_stretch(screen, GameSettings.fullscreen_resolution(screen, GameSettings.fullscreen_aspect))
 
-## 按「全屏宽高比」档位把窗口尺寸设为换算出的全屏分辨率（ADR-0029）。
-func _set_fullscreen_resolution() -> void:
+## 按档位设置引擎内拉伸（ADR-0029）：渲染尺寸 == 屏幕原生（16:9 档）或全零（退出
+## 全屏）时关闭拉伸、回到默认直渲；否则 VIEWPORT + IGNORE，把 16:10 画面横向
+## 拉满 16:9 屏（拉伸对 3D 与 UI 一体生效，武器视口随画布同步，见 ADR-0029）。
+func _apply_fullscreen_stretch(screen_size: Vector2i, render_size: Vector2i) -> void:
 	var window := get_window()
-	window.size = GameSettings.fullscreen_resolution(
-		DisplayServer.screen_get_size(window.current_screen), GameSettings.fullscreen_aspect
-	)
+	if render_size == Vector2i.ZERO or render_size == screen_size:
+		window.content_scale_mode = Window.CONTENT_SCALE_MODE_DISABLED
+		return
+	window.content_scale_size = render_size
+	window.content_scale_aspect = Window.CONTENT_SCALE_ASPECT_IGNORE
+	window.content_scale_mode = Window.CONTENT_SCALE_MODE_VIEWPORT
 
 ## ESC：菜单 / 结算下不做事；对局与计时会话的任一阶段都结束本局并给出结算。
 func _on_escape() -> void:

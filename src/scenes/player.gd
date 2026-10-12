@@ -75,7 +75,17 @@ func _unhandled_input(event: InputEvent) -> void:
 		return # 手柄连着就忽略鼠标（ADR-0003）
 	if event is InputEventMouseMotion:
 		var mm := event as InputEventMouseMotion
-		apply_look(-mm.relative.x * _sensitivity(), -mm.relative.y * _sensitivity())
+		# 引擎内拉伸（ADR-0029）下 Godot 会把 relative 的 x 分量按内容/窗口比例
+		# 反向缩放（Viewport._make_input_local），乘回去保证水平与垂直的每像素
+		# 角速度一致——CS stretched 的灵敏度语义。
+		apply_look(-mm.relative.x * _look_stretch_x() * _sensitivity(), -mm.relative.y * _sensitivity())
+
+## 「全屏宽高比」16:10 档的横向拉伸补偿系数；未拉伸（16:9/窗口化）时恒为 1。
+func _look_stretch_x() -> float:
+	var win := get_window()
+	if win.content_scale_mode != Window.CONTENT_SCALE_MODE_VIEWPORT or win.content_scale_size.x <= 0:
+		return 1.0
+	return win.size.x / float(win.content_scale_size.x)
 
 func _physics_process(delta: float) -> void:
 	_refresh_gamepad()
