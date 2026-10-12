@@ -12,7 +12,7 @@ func test_defaults_cover_all_actions() -> void:
 	assert_eq(d[&"fire"], "b10")
 	assert_eq(d[&"ads"], "b9")
 	assert_eq(d[&"weapon_switch"], "b3")
-	assert_eq(d[&"toggle_settings"], "b4")
+	assert_eq(d[&"toggle_settings"], "b1")
 
 func test_from_event_button() -> void:
 	var press := InputEventJoypadButton.new()
@@ -100,7 +100,7 @@ func test_load_bindings_valid_invalid_missing() -> void:
 	assert_eq(String(b[&"jump"]), "a5:1")
 	assert_eq(String(b[&"crouch"]), "a4:1")
 	assert_eq(String(b[&"ads"]), "b9")
-	assert_eq(String(b[&"toggle_settings"]), "b4") # 缺项回落默认
+	assert_eq(String(b[&"toggle_settings"]), "b1") # 缺项回落默认
 
 func test_load_bindings_accepts_unbound() -> void:
 	var cfg := ConfigFile.new()

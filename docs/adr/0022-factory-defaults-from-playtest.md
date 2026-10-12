@@ -17,3 +17,7 @@
 - `game_settings.gd` 初值与 `PresetStore.DEFAULTS` 是**两份人肉同步的副本**：改任一默认必须两处同改，并跑 `test_preset_and_auto_radius`（里面有 DEFAULTS 一致性断言）。
 - 验证方式：删 `user://settings.cfg` 冷启动，逐项核对初值（已执行，29 项全中）。
 - 烘焙后删 cfg 无损失：原 cfg 的预设表为空、无活动预设。
+
+## 2026-10-12 第二次烘焙
+
+玩家继续实测后又沉淀出一批新定稿值（冲锋枪相机通道 1.1、体型半径 10、游走 0.55、进攻 0.35、撤退 0.25、走廊 125、躲避概率 0.1/0.25、跳跃间隔 0.6–5.5、RAS 概率 0.5、开关设置改绑 B），按同一决策整体烧入代码默认：`game_settings.gd` 变量初值、`PresetStore.DEFAULTS`、`GamepadBindings.DEFAULTS`（与 project.godot 手写 InputMap 保持双处契约）。自建预设表（「半自动」「连发」）属用户快照，**不烧入**——预设是用户数据不是出厂配置；现存 settings.cfg **不动**——迁移只改代码默认，旧 cfg 的值恰好等于新默认，本机无感，新装机直接得到新出厂值。

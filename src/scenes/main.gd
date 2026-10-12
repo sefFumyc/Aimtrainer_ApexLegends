@@ -113,6 +113,8 @@ var _kill_audio: AudioStreamPlayer
 var _pre_beep_audio: AudioStreamPlayer
 var _start_beep_audio: AudioStreamPlayer
 var _respawn_audio: AudioStreamPlayer3D ## 刷新三维定位音（ADR-0019）：全套音效里唯一带方位感的
+## 进独占全屏前的窗口尺寸（ADR-0029）：退回窗口化时恢复。
+var _pre_fullscreen_size := Vector2i.ZERO
 
 ## 每帧装配一次的 bot 感知；玩家开火（物理帧）也复用它，不必重算。
 var _perception := BotAi.Perception.new()
@@ -129,6 +131,8 @@ func _ready() -> void:
 	# 主菜单提示随「间隔计时器」开关即时刷新（CONTEXT「主菜单」）：设置一关立刻重算。
 	settings_panel.closed.connect(main_menu.refresh_hint)
 	settings_panel.changed.connect(_apply_settings)
+	# 「全屏宽高比」在全屏状态下切档 → 立即重设分辨率（ADR-0029）。
+	settings_panel.fullscreen_aspect_changed.connect(_apply_fullscreen_resolution)
 	main_menu.start_pressed.connect(_on_menu_start)
 	main_menu.settings_pressed.connect(func() -> void: settings_panel.toggle())
 	settlement.new_round_pressed.connect(_start_duel)
@@ -177,13 +181,32 @@ func _tick_hotkeys() -> void:
 	if Input.is_action_just_pressed("ui_cancel"):
 		_on_escape()
 
-## F11 切换 窗口 ↔ 独占全屏（ADR-0019）：会话级热键，不持久化、任何舞台可用。
+## F11 切换 窗口 ↔ 独占全屏（ADR-0019/0029）：会话级热键，不持久化、任何舞台可用。
+## 全屏分辨率按「全屏宽高比」档位算出（屏高为分母、16:aspect 算宽）；进全屏前记住
+## 窗口尺寸、退回时恢复。
 func _toggle_fullscreen() -> void:
 	var window := get_window()
-	window.mode = (
-		Window.MODE_WINDOWED
-		if window.mode == Window.MODE_EXCLUSIVE_FULLSCREEN
-		else Window.MODE_EXCLUSIVE_FULLSCREEN
+	if window.mode == Window.MODE_EXCLUSIVE_FULLSCREEN:
+		window.mode = Window.MODE_WINDOWED
+		window.size = _pre_fullscreen_size
+		return
+	_pre_fullscreen_size = window.size
+	_set_fullscreen_resolution()
+	window.mode = Window.MODE_EXCLUSIVE_FULLSCREEN
+
+## 「全屏宽高比」切档时由设置面板触发（ADR-0029）：正在独占全屏则立即按新档位重设
+## 分辨率；窗口化则仅由下次 F11 生效。重申一遍模式，让显示模式跟上新尺寸。
+func _apply_fullscreen_resolution() -> void:
+	if get_window().mode != Window.MODE_EXCLUSIVE_FULLSCREEN:
+		return
+	_set_fullscreen_resolution()
+	get_window().mode = Window.MODE_EXCLUSIVE_FULLSCREEN
+
+## 按「全屏宽高比」档位把窗口尺寸设为换算出的全屏分辨率（ADR-0029）。
+func _set_fullscreen_resolution() -> void:
+	var window := get_window()
+	window.size = GameSettings.fullscreen_resolution(
+		DisplayServer.screen_get_size(window.current_screen), GameSettings.fullscreen_aspect
 	)
 
 ## ESC：菜单 / 结算下不做事；对局与计时会话的任一阶段都结束本局并给出结算。

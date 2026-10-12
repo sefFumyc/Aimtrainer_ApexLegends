@@ -52,21 +52,22 @@ const CORE_FIELDS: Array[String] = [
 	"lifesteal_enabled",
 ]
 
-## 出厂默认（缺字段时补齐；与 `GameSettings` 的初值一致——玩家实测定稿手感，2026-10 烘焙）。
+## 出厂默认（缺字段时补齐；与 `GameSettings` 的初值一致——玩家实测定稿手感，
+## 2026-10 第二次烘焙，ADR-0022）。
 const DEFAULTS := {
 	"target_range": 400.0,
-	"body_radius": 12.0,
+	"body_radius": 10.0,
 	"bot_hit_rate": 50,
 	"bot_fire_enabled": true,
 	"bot_ads_enabled": false,
 	"lifesteal_enabled": false,
 	"bot_movement_mode": 1,
-	"bot_wander": 0.45,
-	"bot_aggression": 0.5,
-	"bot_retreat": 0.3,
-	"bot_range_amp": 100.0,
-	"bot_dodge_auto": 0.15,
-	"bot_dodge_semi": 0.3,
+	"bot_wander": 0.55,
+	"bot_aggression": 0.35,
+	"bot_retreat": 0.25,
+	"bot_range_amp": 125.0,
+	"bot_dodge_auto": 0.1,
+	"bot_dodge_semi": 0.25,
 	"bot_dodge_min_time": 0.1,
 	"bot_switch_min": 1.0,
 	"bot_switch_max": 1.5,
@@ -78,9 +79,9 @@ const DEFAULTS := {
 	"bot_slide_jump_enabled": true,
 	"bot_slide_jump_prob": 0.5,
 	"bot_jump_enabled": true,
-	"bot_jump_min": 4.0,
-	"bot_jump_max": 12.0,
-	"bot_jump_ras_prob": 0.0,
+	"bot_jump_min": 0.6,
+	"bot_jump_max": 5.5,
+	"bot_jump_ras_prob": 0.5,
 }
 
 ## 预设名 → 27 项快照（String 键）。

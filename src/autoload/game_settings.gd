@@ -56,18 +56,24 @@ var hit_marker_enabled := true
 ## 「受击红屏」（ADR-0019）：玩家被 bot 命中时全屏泛红渐隐的开关，与「命中提示」对偶。
 var hit_flash_enabled := true
 ## 「后坐力强度」（票 08 / ADR-0026，CONTEXT）：枪械抖动（枪体 kick）与相机抖动（相机踢）按武器
-## 分档的倍率，出厂默认即玩家实测定稿手感（步枪/手枪 × 枪械/相机；冲锋枪无实测，
-## 默认中性 1.0 从设计基准起步），0 = 关掉该通道。个人手感偏好，不进预设 26 项。
+## 分档的倍率，出厂默认全部为玩家实测定稿手感（ADR-0022 第二次烘焙），
+## 0 = 关掉该通道。个人手感偏好，不进预设。
 var recoil_gun_rifle := 1.4
 var recoil_gun_pistol := 2.0
 var recoil_gun_burst := 1.0
 var recoil_cam_rifle := 0.72
 var recoil_cam_pistol := 2.0
-var recoil_cam_burst := 1.0
+var recoil_cam_burst := 1.1
 ## 「画面质量」两档（默认中）。
 var graphics_quality: Quality = Quality.MEDIUM
-## 靶的「体型半径」（4–60，默认 12）。
-var body_radius := 12.0
+## 「全屏宽高比」两档取值（ADR-0029）：分辨率按 16:档位 算宽。
+const FULLSCREEN_ASPECT_16_9 := 9
+const FULLSCREEN_ASPECT_16_10 := 10
+## 「全屏宽高比」（ADR-0029）：F11 独占全屏时的分辨率档位（16:9 = 9 / 16:10 = 10，默认 16:9）。
+## 只影响全屏，窗口化不受影响；即改即存、不进「预设」。
+var fullscreen_aspect := FULLSCREEN_ASPECT_16_9
+## 靶的「体型半径」（4–60，默认 10）。
+var body_radius := 10.0
 ## 「目标距离」（40–800，默认 400）：bot 与玩家的理想平面距离，也是「刷新」的生成距离。
 var target_range := 400.0
 ## 「场地布局」。
@@ -88,16 +94,16 @@ var bot_switch_min := 1.0
 var bot_switch_max := 1.5
 ## 「移动模式」（默认「动态游走」）。
 var bot_movement_mode: BotMovement = BotMovement.WANDER
-## 「游走倾向」（0–1，默认 0.45）：变向时混入「前后分量」的概率。
-var bot_wander := 0.45
-## 「进攻倾向」/「撤退倾向」（0–1，默认 0.5 / 0.3）：混入的那一份选 W / S 的加权比例。
-var bot_aggression := 0.5
-var bot_retreat := 0.3
-## 「走廊」半宽（0–300，默认 100）：动态游走时允许的距离波动幅度。
-var bot_range_amp := 100.0
-## 「躲避概率」（0–1）：连发（步枪）默认 0.15、单发（手枪）默认 0.3。
-var bot_dodge_auto := 0.15
-var bot_dodge_semi := 0.3
+## 「游走倾向」（0–1，默认 0.55）：变向时混入「前后分量」的概率。
+var bot_wander := 0.55
+## 「进攻倾向」/「撤退倾向」（0–1，默认 0.35 / 0.25）：混入的那一份选 W / S 的加权比例。
+var bot_aggression := 0.35
+var bot_retreat := 0.25
+## 「走廊」半宽（0–300，默认 125）：动态游走时允许的距离波动幅度。
+var bot_range_amp := 125.0
+## 「躲避概率」（0–1）：连发（步枪）默认 0.1、单发（手枪）默认 0.25。
+var bot_dodge_auto := 0.1
+var bot_dodge_semi := 0.25
 ## 「最短躲避时间」（0–1.0 秒，默认 0.1，0 = 关闭）：只约束躲避。
 var bot_dodge_min_time := 0.1
 
@@ -111,10 +117,10 @@ var bot_slide_jump_prob := 0.5
 ## 「bot 跳跃」（票 11 / ADR-0023）：独立随机计时的对枪跳跃——开关 + 「跳跃间隔」窗口（秒）。
 ## 不绑变向/受击；不与「bot 开镜」互锁（bot 开镜无视觉表现，空中开镜不矛盾）。
 var bot_jump_enabled := true
-var bot_jump_min := 4.0
-var bot_jump_max := 12.0
-## 「RAS 概率」（票 13 / ADR-0028，默认 0）：抽中跳跃后延迟到变向满速瞬间起跳的概率。
-var bot_jump_ras_prob := 0.0
+var bot_jump_min := 0.6
+var bot_jump_max := 5.5
+## 「RAS 概率」（票 13 / ADR-0028，默认 0.5）：抽中跳跃后延迟到变向满速瞬间起跳的概率。
+var bot_jump_ras_prob := 0.5
 ## 「吸血」（默认关）：命中方按本次伤害回血，封顶 600。
 var lifesteal_enabled := false
 ## 「间隔计时器」（默认关）：启用后主菜单「开始」进入计时会话。
@@ -156,6 +162,13 @@ func load_settings() -> void:
 	ads_sens_mult = cfg.get_value("input", "ads_sens_mult", ads_sens_mult)
 	gamepad_bindings = GamepadBindings.load_bindings(cfg)
 	graphics_quality = cfg.get_value("video", "quality", graphics_quality) as Quality
+	# 全屏宽高比只认两档（ADR-0029），其余历史值一律回落默认。
+	var stored_aspect := int(cfg.get_value("video", "aspect", fullscreen_aspect))
+	fullscreen_aspect = (
+		stored_aspect
+		if stored_aspect in [FULLSCREEN_ASPECT_16_9, FULLSCREEN_ASPECT_16_10]
+		else FULLSCREEN_ASPECT_16_9
+	)
 	muzzle_flash_enabled = cfg.get_value("fx", "muzzle_flash", muzzle_flash_enabled)
 	tracer_enabled = cfg.get_value("fx", "tracer", tracer_enabled)
 	hit_marker_enabled = cfg.get_value("fx", "hit_marker", hit_marker_enabled)
@@ -251,6 +264,11 @@ func avoidance_config() -> AvoidanceController.Config:
 	apply_avoidance_config(out)
 	return out
 
+## 按「全屏宽高比」档位算独占全屏分辨率（ADR-0029）：取屏幕高为分母、按 16:aspect 算宽——
+## 16:9 恰为桌面原生（与旧版行为等价），16:10 通常窄于屏幕、由驱动整体拉伸铺满。
+static func fullscreen_resolution(screen: Vector2i, aspect: int) -> Vector2i:
+	return Vector2i(int(round(screen.y * 16.0 / aspect)), screen.y)
+
 ## 任一 bot 滑铲开关是否开启（ADS 互锁与铲跳可用性判定共用）。
 func bot_slide_any_enabled() -> bool:
 	return bot_attack_slide_enabled or bot_respawn_slide_enabled
@@ -308,6 +326,7 @@ func save_settings() -> void:
 	for action in GamepadBindings.ACTIONS:
 		cfg.set_value("input", "bind_" + String(action), String(gamepad_bindings.get(action, "")))
 	cfg.set_value("video", "quality", graphics_quality)
+	cfg.set_value("video", "aspect", fullscreen_aspect)
 	cfg.set_value("fx", "muzzle_flash", muzzle_flash_enabled)
 	cfg.set_value("fx", "tracer", tracer_enabled)
 	cfg.set_value("fx", "hit_marker", hit_marker_enabled)

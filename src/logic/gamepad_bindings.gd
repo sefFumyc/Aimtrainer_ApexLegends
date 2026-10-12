@@ -27,15 +27,16 @@ const LABELS := {
 	&"toggle_settings": "开关设置",
 }
 
-## 出厂默认（ADR-0025）：砍掉 A/B——跳跃=RT、蹲=LT、开火=RB、开镜=LB、切换武器=Y、开关设置=Back。
-## 与 project.godot 手写 InputMap 的手柄事件保持一致（运行时以本表回灌）。
+## 出厂默认（ADR-0025）：砍掉 A/B——跳跃=RT、蹲=LT、开火=RB、开镜=LB、切换武器=Y、开关设置=B。
+## 与 project.godot 手写 InputMap 的手柄事件保持一致（运行时以本表回灌）；
+## 开关设置=B 是玩家实测定稿（ADR-0022 第二次烘焙）。
 const DEFAULTS := {
 	&"jump": "a5:1",
 	&"crouch": "a4:1",
 	&"fire": "b10",
 	&"ads": "b9",
 	&"weapon_switch": "b3",
-	&"toggle_settings": "b4",
+	&"toggle_settings": "b1",
 }
 
 ## 按钮友好名（Godot JoyButton 枚举；0=A … 14=十字右）。

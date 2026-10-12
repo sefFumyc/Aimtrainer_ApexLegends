@@ -9,6 +9,8 @@ extends Control
 signal changed
 signal opened
 signal closed
+## 「全屏宽高比」切档（ADR-0029）：main 据此在独占全屏状态下立即重设分辨率。
+signal fullscreen_aspect_changed
 
 const LABEL_WIDTH := 150
 const ADS_MULT_MIN := 0.1 ## 「开镜灵敏度倍率」下限（CONTEXT）
@@ -43,6 +45,10 @@ var _capturing_action := StringName("")
 
 ## prop → 控件：切预设后按需回灌数值（`set_value_no_signal` 避免反过来再写一遍）。
 var _controls := {}
+
+## 「全屏宽高比」（ADR-0029）：档位下拉框 + 只读换算信息行。
+var _aspect_select: OptionButton
+var _aspect_info: Label
 
 func _ready() -> void:
 	set_anchors_preset(Control.PRESET_FULL_RECT)
@@ -233,8 +239,19 @@ func _build_video_page(page: VBoxContainer) -> void:
 	quality.item_selected.connect(_on_quality)
 	page.add_child(_row("画面质量", quality))
 
+	# 「全屏宽高比」（ADR-0029）：只作用于 F11 独占全屏，16:9 恰为桌面原生、
+	# 16:10 窄于屏幕由驱动拉伸铺满（CS/Apex stretched 语义）；信息行随档位即时换算。
+	_aspect_select = OptionButton.new()
+	_aspect_select.add_item("16:9", GameSettings.FULLSCREEN_ASPECT_16_9)
+	_aspect_select.add_item("16:10", GameSettings.FULLSCREEN_ASPECT_16_10)
+	_aspect_select.selected = _aspect_select.get_item_index(GameSettings.fullscreen_aspect)
+	_aspect_select.item_selected.connect(_on_fullscreen_aspect)
+	page.add_child(_row("全屏宽高比", _aspect_select))
+	_aspect_info = _label(_fullscreen_aspect_text())
+	page.add_child(_aspect_info)
+
 ## 「后坐力强度」分页（票 08 / ADR-0026）：六通道倍率滑条平铺，倍率量纲 0–2、步进 0.01、
-## 两位小数；0 = 关掉该通道抖动。步枪/手枪出厂默认即玩家实测定稿手感，冲锋枪中性 1.0。
+## 两位小数；0 = 关掉该通道抖动。出厂默认全部为玩家实测定稿手感（ADR-0022 第二次烘焙）。
 ## 个人手感偏好，随 GameSettings 即改即存、不进预设。
 func _build_recoil_page(page: VBoxContainer) -> void:
 	var lo: float = GameSettings.RECOIL_MULT_MIN
@@ -590,6 +607,19 @@ func _on_movement_mode(index: int) -> void:
 
 func _on_quality(index: int) -> void:
 	_write(&"graphics_quality", GameSettings.Quality.LOW if index == 0 else GameSettings.Quality.MEDIUM)
+
+## 「全屏宽高比」切档（ADR-0029）：写设置（即改即存、不在预设 FIELDS 内故无写回）→
+## 刷新信息行 → 通知 main（全屏中立即生效）。
+func _on_fullscreen_aspect(index: int) -> void:
+	_write(&"fullscreen_aspect", _aspect_select.get_item_id(index))
+	_aspect_info.text = _fullscreen_aspect_text()
+	fullscreen_aspect_changed.emit()
+
+## 信息行文本：桌面分辨率 → 全屏换算结果（拉伸铺满）。
+func _fullscreen_aspect_text() -> String:
+	var screen := DisplayServer.screen_get_size(DisplayServer.window_get_current_screen())
+	var full := GameSettings.fullscreen_resolution(screen, GameSettings.fullscreen_aspect)
+	return "桌面 %d×%d → 全屏 %d×%d（拉伸铺满）" % [screen.x, screen.y, full.x, full.y]
 
 func _on_fire_enabled(on: bool) -> void:
 	_hit_rate_row.visible = on
