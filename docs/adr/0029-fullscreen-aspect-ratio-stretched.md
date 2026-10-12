@@ -6,6 +6,10 @@
 
 初版走「路线 A：独占全屏 + `window.size` 设非原生分辨率、靠驱动拉伸铺满」，用户实测两档毫无区别。读 Godot 4.7.2 源码定案（`platform/windows/display_server_windows.cpp`）：`window_set_mode` 进入全屏时无条件 `MoveWindow` 到 `screen_get_size()`，且**全文件 `ChangeDisplaySettings` 零调用**——Godot 4.7 根本不做显示模式切换，任何非原生 `window.size` 在进全屏时被静默覆盖回桌面分辨率。此路线在该引擎版本物理不可能，非驱动设置问题。
 
+## 勘误：鼠标横向不做补偿（2026-10-12，用户实测裁决）
+
+首版曾按「水平/垂直每像素角速度一致」在 `player._look_stretch_x` 把被 content scale 缩小的 `relative.x` 乘回拉伸比。用户裁决撤销：source 类引擎改 16:10，横向操作速度就是会变快（键鼠与手柄皆然），这正是 stretched 手感的一部分，不该反向补偿。现口径：**横向输入随引擎原样缩放，零修正**；手柄是角速度（rad/s）不经像素换算，本就无补偿可言。`_look_stretch_x` 已删除。
+
 ## 修订 ADR-0019 的边界
 
 ADR-0019 定下「F11 不进设置面板、不持久化」——指的是全屏**状态**。本次在其上正交新增宽高比**设置项**：进「画面与输入」页、持久化（settings.cfg `[video]` 段 `aspect`，9/10，默认 9）、不进「预设」。F11 本身仍是会话级热键，全屏状态照旧不持久化、每次启动回窗口模式。
@@ -20,7 +24,7 @@ ADR-0019 定下「F11 不进设置面板、不持久化」——指的是全屏*
 
 ## Consequences
 
-- **鼠标输入补偿（关键）**：content scale 的非均匀缩放会被 Godot 反向写进 `InputEventMouseMotion.relative`（`Viewport._make_input_local` → `xformed_by`），横向灵敏度会被除以拉伸比。玩家侧在视角输入处乘回 `window.size.x / content_scale_size.x`（`player._look_stretch_x`），保证水平与垂直每像素角速度一致——CS stretched 的灵敏度语义，瞄准训练器的硬要求。
+- **鼠标横向不补偿（勘误后口径）**：content scale 的非均匀缩放会被 Godot 反向写进 `InputEventMouseMotion.relative`（`Viewport._make_input_local` → `xformed_by`），横向角速度随拉伸比自然变快——这正是 source 类 stretched 手感的一部分（键鼠与手柄皆然），刻意不补偿（见勘误小节）。
 - **集成面已核对**：武器视口是 `SubViewportContainer`（`stretch = true`，画布子节点）随 content scale 同步拉伸；`MuzzleReproject` 取两视口实际 aspect（content 尺寸下同为 16:10）自洽；HUD 画布坐标整体拉伸（CS HUD 同样被拉）。
 - 16:10 档渲染分辨率低于原生（如 2304×1440@1440p），GPU 略省；16:9 档完全走旧直渲路径零变化。
 - 不依赖任何驱动设置（N 卡缩放模式无关），任何显卡/面板表现一致。
