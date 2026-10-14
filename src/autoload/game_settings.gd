@@ -30,6 +30,9 @@ const SWITCH_MIN := 0.2 ## 「模式切换」间隔边界（秒）
 const SWITCH_MAX := 10.0
 const RANGE_AMP_MIN := 0.0 ## 「走廊」半宽边界
 const RANGE_AMP_MAX := 300.0
+## 「目标距离」设置上限 = 场地直径——两名实体在场地内能拉开的几何最大距离（ADR-0030）。
+## 滑条与 cfg 载入钳制引用同一来源；下限 40.0 就地内联。
+const TARGET_RANGE_MAX := 2.0 * MovementSimulator.ARENA_RADIUS
 const HIT_RATE_MIN := 0 ## 「命中率」边界（整数 0–100）
 const HIT_RATE_MAX := 100
 const DODGE_MIN_TIME_MIN := 0.0 ## 「最短躲避时间」边界（秒，0 = 关闭）
@@ -182,7 +185,7 @@ func load_settings() -> void:
 	body_radius = clampf(
 		cfg.get_value("bot", "body_radius", body_radius), Physique.BODY_RADIUS_MIN, Physique.BODY_RADIUS_MAX
 	)
-	target_range = clampf(cfg.get_value("bot", "target_range", target_range), 40.0, 800.0)
+	target_range = clampf(cfg.get_value("bot", "target_range", target_range), 40.0, TARGET_RANGE_MAX)
 	arena_layout = cfg.get_value("arena", "layout", arena_layout) as Layout
 	bot_fire_enabled = cfg.get_value("bot", "fire_enabled", bot_fire_enabled)
 	bot_hit_rate = clampi(

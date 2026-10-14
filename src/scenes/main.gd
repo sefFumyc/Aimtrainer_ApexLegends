@@ -455,6 +455,8 @@ func _play_respawn_sound() -> void:
 
 ## 在玩家前方 ±90° 的半圆弧上取「目标距离」处的点：避开围墙、遮挡物，
 ## 且不落在玩家当前的「瞄准视锥」内（票 02 验收 8）。
+## 点越出场地时沿场心方向缩回界内（ADR-0030，与「刷新」词条 / `_pick_player_spawn` 同款）——
+## 目标距离可设到场地直径，出生弧整段越界时落回「尽可能远」而非作废重试或落点出界。
 func _pick_spawn() -> Vector3:
 	var dist := GameSettings.target_range
 	var limit := MovementSimulator.ARENA_RADIUS - SPAWN_BOUNDARY_MARGIN
@@ -462,14 +464,17 @@ func _pick_spawn() -> Vector3:
 		var a := player.yaw + randf_range(-SPAWN_SPREAD, SPAWN_SPREAD)
 		var dir := Vector3(-sin(a), 0.0, -cos(a))
 		var p := player.global_position + dir * dist
-		var flat := Vector2(p.x, p.z)
-		if flat.length() > limit or arena.is_blocked(flat, SPAWN_CLEARANCE):
+		var flat := Vector2(p.x, p.z).limit_length(limit)
+		if arena.is_blocked(flat, SPAWN_CLEARANCE):
 			continue
 		if _player_aims_at(flat):
 			continue
 		return Vector3(flat.x, 0.0, flat.y)
 	var fallback := Vector3(-sin(player.yaw), 0.0, -cos(player.yaw))
-	return player.global_position + fallback * dist
+	var fallback_flat := Vector2(
+		player.global_position.x + fallback.x * dist, player.global_position.z + fallback.z * dist
+	).limit_length(limit)
+	return Vector3(fallback_flat.x, 0.0, fallback_flat.y)
 
 ## 玩家当前的视线是否正落在这个平面点上（「瞄准视锥」与 bot 自己用的是同一套判据）。
 func _player_aims_at(p: Vector2) -> bool:
@@ -519,10 +524,7 @@ func _pick_player_spawn(center: Vector2) -> Vector2:
 	var limit := MovementSimulator.ARENA_RADIUS - SPAWN_BOUNDARY_MARGIN
 	for attempt in SPAWN_ATTEMPTS:
 		var a := randf() * TAU
-		var p := center + Vector2(cos(a), sin(a)) * radius
-		var d := p.length()
-		if d > limit:
-			p *= limit / d
+		var p := (center + Vector2(cos(a), sin(a)) * radius).limit_length(limit)
 		if not arena.is_blocked(p, SPAWN_CLEARANCE):
 			return p
 	return center # 兜底：实在找不到就贴着 bot 重生

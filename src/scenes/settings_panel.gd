@@ -120,7 +120,7 @@ func _build_target_page(page: VBoxContainer) -> void:
 	_controls["body_radius"] = radius
 	page.add_child(_row("靶体型半径", radius))
 
-	var range_slider := _slider(40.0, 800.0, 10.0, GameSettings.target_range)
+	var range_slider := _slider(40.0, GameSettings.TARGET_RANGE_MAX, 10.0, GameSettings.target_range)
 	range_slider.value_changed.connect(func(v: float) -> void: _write(&"target_range", v))
 	_controls["target_range"] = range_slider
 	page.add_child(_row("目标距离", range_slider))
