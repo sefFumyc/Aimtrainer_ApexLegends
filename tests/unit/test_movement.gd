@@ -39,7 +39,8 @@ func test_world_to_local_yaw0() -> void:
 	assert_almost_eq(fwd.y, 1.0, 1e-9, "yaw=0 时世界 −z 是前")
 
 func test_world_to_local_facing_center_at_yaw_90() -> void:
-	# 「朝圆心」向量 (−1,0) 落在前向——贴墙内拐的回归判据（符号写反会变成朝墙外）
+	# 「朝圆心」向量 (−1,0) 落在前向——符号写反就变成朝墙外（`target.gd` 用它把世界速度
+	# 换成骨级侧偏的本地轴）
 	var v := MovementSimulator.world_to_local(-1.0, 0.0, PI / 2.0)
 	assert_almost_eq(v.x, 0.0, 1e-9)
 	assert_almost_eq(v.y, 1.0, 1e-9)

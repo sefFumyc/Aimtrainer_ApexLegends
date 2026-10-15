@@ -265,6 +265,124 @@ func test_blocked_by_physics_flips_with_commit_window() -> void:
 	assert_true(bot.on_blocked(2.9, 0.0), "窗口走完仍受阻 → 再翻一次")
 	assert_false(bot.on_blocked(0.0, 0.0), "纯逻辑本帧没有位移时不算受阻")
 
+# ---- 后退推力随离墙余量衰减（票 02 / ADR-0031）----
+
+## 离场心的**外推速度分量**（正 = 朝墙外顶）。后退推力就体现在这一读数上。
+func radial_outward_speed(bot: BotAi) -> float:
+	var pos := bot.sim.position()
+	if pos.length() < 1e-6:
+		return 0.0
+	return bot.sim.velocity().dot(pos.normalized())
+
+## 衰减探针：玩家放在远处（朝向不随横移旋转 ⇒ 不触发「转向衰减」污染读数）、
+## 走「动态游走」档并锁死前后分量 = 退开（FORE_BACK）——于是前后分量恒为 −1，
+## 与「目标距离 / 距离误差」解耦。bot 放在 (0, −r)：后退方向 (0, −1) 恰好径向朝外、
+## 侧向 (−1, 0) 恰为切线方向。「余量 = (1000 − r) − 体型半径」：体型半径取默认 8，
+## 故 r = 992 即余量耗尽。返回跑完 `seconds` 秒的 bot 本体（读数由调用方取）。
+func retreat_probe(r: float, seconds := 0.15) -> BotAi:
+	var bot := bot_at(Vector2(0.0, -r))
+	var p := perception(Vector2(0.0, 1402.0 - r))
+	p.wander_mode = true
+	p.target_range = 1402.0
+	p.range_amp = 2000.0 # 走廊极宽：始终交给前后分量，不走走廊硬约束
+	bot.avoidance.fore_mix = AvoidanceController.FORE_BACK
+	bot.avoidance.dir = AvoidanceController.DIR_RIGHT
+	bot.avoidance.flip_timer = 999.0
+	bot.avoidance.switch_timer = 999.0
+	run(bot, p, seconds, false)
+	return bot
+
+## 余量充裕（≥ WALL_MARGIN）时衰减恒等 1：中场与「恰好仍在带外」的外推逐值一致。
+func test_retreat_taper_is_identity_away_from_the_wall() -> void:
+	var midfield := radial_outward_speed(retreat_probe(500.0))
+	var near_band := radial_outward_speed(retreat_probe(902.0)) # 余量 90 > 60 → 仍在带外
+	assert_gt(midfield, 100.0, "中场：后退分量满幅外推（与旧行为一致）")
+	assert_almost_eq(near_band, midfield, 1.0, "余量 90 仍恒等 1 —— 衰减只在余量带内生效")
+
+## 余量带内按比例衰减（不是开关式归零）：外推随余量单调减弱，耗尽即零。
+func test_retreat_taper_scales_with_margin() -> void:
+	var full := radial_outward_speed(retreat_probe(500.0)) # 余量 492 → 系数 1
+	var band := radial_outward_speed(retreat_probe(962.0)) # 余量 30 → 系数 0.5
+	var thin := radial_outward_speed(retreat_probe(977.0)) # 余量 15 → 系数 0.25
+	var gone := radial_outward_speed(retreat_probe(992.0)) # 余量 0
+	assert_gt(full, band, "远离墙：满幅外推")
+	assert_gt(band, thin, "余量变少 → 外推变弱（按比例，不是开关式归零）")
+	assert_gt(thin, gone, "余量再少 → 更弱")
+	assert_lt(gone, 5.0, "余量耗尽 → 外推归零")
+
+## 余量耗尽仍不被绞住：后退分量归零但侧向照旧 —— bot 沿墙内侧滑，而不是原地卡死。
+func test_retreat_taper_zeroes_outward_push_at_the_wall() -> void:
+	var bot := retreat_probe(992.0)
+	assert_lt(absf(radial_outward_speed(bot)), 5.0, "余量耗尽 ⇒ 外推分量归零，不再朝墙顶")
+	assert_gt(bot.sim.speed(), GUN_CAP - 20.0, "掐掉后退分量后仍在动（改为沿墙内侧侧移）")
+	assert_lt(bot.sim.position().length(), 993.0, "没有外移：位移全部落在墙的切线方向")
+
+## 衰减只在后退方向生效：贴墙且意图**前进**（朝玩家）时照旧推进，不被余量削减。
+func test_retreat_taper_leaves_forward_intent_alone() -> void:
+	var bot := bot_at(Vector2(0.0, -992.0))
+	var p := perception(Vector2(0.0, -800.0)) # 距离 192 > 「目标距离」→ 意图前进
+	bot.avoidance.dir = AvoidanceController.DIR_NONE # 纯径向后退/前进：朝向不随位移旋转
+	bot.avoidance.flip_timer = 999.0
+	bot.avoidance.switch_timer = 999.0
+	run(bot, p, 0.15, false)
+	assert_lt(radial_outward_speed(bot), -100.0, "前进分量不受余量衰减：仍在朝内推进")
+
+## 「动态游走」档的走廊硬约束（越界满幅归位）同样过这条衰减——两种来源共用同一注入点。
+## 读数取**位置半径**：贴墙满幅后退会被仿真径向钳制顶到 1000 并钉死，只有衰减能让它停在 992。
+func test_retreat_taper_also_damps_wander_corridor_override() -> void:
+	assert_gt(radial_outward_speed(corridor_probe(500.0)), 150.0, "中场：走廊硬约束满幅后退")
+	var wall := corridor_probe(992.0, 1.0)
+	assert_lt(wall.sim.position().length(), 995.0, "贴墙：硬约束的满幅后退被衰减 → 不再顶到钳制圈上")
+
+## 走廊硬约束探针：玩家在 bot 径向内侧 40 处、走廊半宽 25 ⇒ 距离误差 −80 越界 →
+## 硬约束返回满幅后退（−1）。侧向关掉（DIR_NONE）使后退纯径向、朝向不旋转。
+func corridor_probe(r: float, seconds := 0.15) -> BotAi:
+	var bot := bot_at(Vector2(0.0, -r))
+	var p := perception(Vector2(0.0, -(r - 40.0)))
+	p.wander_mode = true
+	p.range_amp = 25.0
+	bot.avoidance.dir = AvoidanceController.DIR_NONE
+	bot.avoidance.flip_timer = 999.0
+	bot.avoidance.switch_timer = 999.0
+	run(bot, p, seconds, false)
+	return bot
+
+## 衰减是纯函数、不掷骰：同一 RNG 种子的开火序列逐发一致（余量不同 ⇒ 只影响移动）。
+func test_retreat_taper_does_not_disturb_fire_sequence() -> void:
+	var a := bot_at(Vector2(0.0, -992.0)) # 余量耗尽（衰减 0）
+	var b := bot_at(Vector2(0.0, -500.0)) # 余量充裕（衰减 1）
+	var pa := perception(Vector2(0.0, 410.0)) # 与两台 bot 的距离都是 1402（几何互不相关）
+	var pb := perception(Vector2(0.0, 902.0))
+	for pair in [[a, pa], [b, pb]]:
+		var bot: BotAi = pair[0]
+		var p: BotAi.Perception = pair[1]
+		p.wander_mode = true
+		p.target_range = 1402.0
+		p.range_amp = 2000.0
+		p.fire_enabled = true
+		p.hit_rate = 50
+		bot.avoidance.fore_mix = AvoidanceController.FORE_BACK
+		bot.avoidance.dir = AvoidanceController.DIR_RIGHT
+		bot.avoidance.flip_timer = 999.0
+		bot.avoidance.switch_timer = 999.0
+		bot.take_damage(1, p) # 直接持有开火锁（受击反击语义）：序列只由计时器与骰子决定
+	var seq_a: Array = []
+	var seq_b: Array = []
+	var elapsed := 0.0
+	while elapsed < 5.0:
+		for s in a.update(0.01, pa):
+			seq_a.append(s)
+		for s in b.update(0.01, pb):
+			seq_b.append(s)
+		elapsed += 0.01
+	assert_gt(seq_a.size(), 40, "前置：两台 bot 都在持续开火")
+	assert_eq(seq_a.size(), seq_b.size(), "开火次数一致")
+	var mismatch := false
+	for i in seq_a.size():
+		if seq_a[i] != seq_b[i]:
+			mismatch = true
+	assert_false(mismatch, "命中/失手序列逐发一致（衰减不消耗随机数）")
+
 # ---- 开火门控 ----
 
 func test_fire_toggle_off_means_no_shots() -> void:
@@ -355,6 +473,34 @@ func test_lethal_hit_does_not_dodge() -> void:
 	assert_true(bot.take_damage(BotAi.MAX_HP, p), "致命一击")
 	assert_eq(bot.avoidance.dir, dir, "致命那一发不躲避")
 	assert_false(bot.alive)
+
+# ---- 贴墙守卫（票 03 / ADR-0031）----
+
+## 贴墙且翻向朝外 → 守卫放弃本次躲避（不白掷骰、不重抽变向计时器）。
+## 墙实体化后 bot 最多只到 `ARENA_RADIUS − 体型半径`（此处 = 992），旧门限（`ARENA_RADIUS`）
+## 永不触发 = 墙边躲避白掷并静默重置变向计时器——门限重定基就是防这个。
+func test_dodge_at_the_wall_is_dropped_and_keeps_the_flip_timer() -> void:
+	var bot := bot_at(Vector2(0.0, -992.0))
+	var p := perception(Vector2(600.0, 0.0)) # 玩家偏在侧后：侧向因此带朝外分量
+	p.dodge_chance = 1.0
+	bot.avoidance.dir = AvoidanceController.DIR_RIGHT
+	bot.avoidance.flip_timer = 7.0
+	bot.avoidance.since_flip = 1.0 # 越过「最短躲避时间」门槛
+	bot.update(0.0, p) # 零时长一帧：只为让「朝向」按玩家方向定下（不产生位移）
+	bot.take_damage(1, p)
+	assert_eq(bot.avoidance.dir, AvoidanceController.DIR_RIGHT, "翻向朝外 → 本次躲避放弃")
+	assert_almost_eq(bot.avoidance.flip_timer, 7.0, 1e-6, "放弃时不重抽变向计时器")
+
+## 守卫只拦「翻出去朝外」的那一半：同一位置、同样贴墙，翻向朝切线时照旧翻。
+func test_dodge_at_the_wall_still_flips_when_the_target_direction_is_tangential() -> void:
+	var bot := bot_at(Vector2(0.0, -992.0))
+	var p := perception(Vector2(0.0, -952.0)) # 玩家在径向内侧：侧向恰为切线
+	p.dodge_chance = 1.0
+	bot.avoidance.dir = AvoidanceController.DIR_RIGHT
+	bot.avoidance.since_flip = 1.0
+	bot.update(0.0, p)
+	bot.take_damage(1, p)
+	assert_eq(bot.avoidance.dir, AvoidanceController.DIR_LEFT, "切线方向的躲避不被守卫拦")
 
 # ---- 死亡与刷新 ----
 

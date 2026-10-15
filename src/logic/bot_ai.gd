@@ -1,10 +1,14 @@
-## 靶子的完整 AI（CONTEXT.md「移动靶」「距离保持」「贴墙内拐」「前向探测」「视线判定」「瞄准视锥」「受击反击」「攻击锁定」）。
+## 靶子的完整 AI（CONTEXT.md「移动靶」「距离保持」「前向探测」「视线判定」「瞄准视锥」「受击反击」「攻击锁定」）。
 ##
-## 语义移植自参考实现 `src/game/bot.ts`，并按本项目新增两条决策：
+## 语义移植自参考实现 `src/game/bot.ts`，并按本项目新增三条决策：
 ## - **前向探测**（ADR-0005）：无寻路，沿移动方向探到「遮挡物」或边界时提前触发变向，
 ##   复用撞墙反向的优惠语义（只翻方向、不重掷前后分量、不重置变向/切换计时，但重置最短躲避时间时钟）。
 ##   翻向带 0.3s 承诺窗口，且物理受阻时由 `on_blocked` 用同一语义兜底（ADR-0014）。
 ## - **视线判定**（ADR-0006）：被遮挡物阻断时本发**不开火**——不掷骰、不消耗随机数。
+## - **边界**（ADR-0031）：围墙是实体（由物理拦住），本类**不再做「贴墙内拐」**；改为
+##   后退分量随「离墙余量」衰减到零（`_retreat_taper`，两种「移动模式」共用），
+##   贴墙时表现为「停退 + 沿墙内侧侧移」。解析边界只剩两个用途：前向探测的提前量、
+##   后退衰减的余量口径。
 ##
 ## 本类是**纯逻辑**：不依赖节点树（ADR-0009 / ADR-0013）。它对世界的两处探知都由外部注入：
 ## - `_probe(origin, dir, length) -> bool`：前向探测的射线（场景提供；纯逻辑测试可注入假实现）；
@@ -22,7 +26,13 @@ const FIRE_INTERVAL := 0.1 ## 开火间隔（与玩家步枪同射速 10 发/秒
 const AIM_CONE_HALF := PI / 18.0 ## 「瞄准视锥」半角（总角 20°）
 const AIM_HOLD := 0.35 ## 视锥内连续满 350ms 才触发开火
 const BODY_HEIGHT := 72.0 ## bot 通体高度（视锥俯仰跨度 0→72）
-const WALL_EPS := 1e-4
+## 「后退」推力的离墙余量带（ADR-0031）：沿后退方向到墙的解析距离减去体型半径即「余量」，
+## 余量 ≤ 0 推力为零、到 WALL_MARGIN 才满幅。独立常量、**不随「场地布局」变**——
+## 布局只管侧向的「前向探测」长度，两件事不耦合。
+const WALL_MARGIN := 60.0
+## 「贴墙守卫」（躲避）的门限容差（单位）：物理求解的 safe_margin 与几何离散都会让 bot
+## 停在 `ARENA_RADIUS − 体型半径` 外侧零点几——差这一丝守卫就永不生效（ADR-0031）。
+const WALL_GUARD_SLOP := 1.0
 const BOT_DAMAGE := 25 ## bot 每发命中扣玩家的血量（永不爆头）
 ## 「前向探测」长度（单位），按「场地布局」档位：空旷 / 少量遮挡 / 多遮挡。
 const PROBE_LENGTHS := [60.0, 120.0, 180.0]
@@ -197,36 +207,31 @@ func update(dt: float, p: Perception) -> Array:
 		sim.advance(dt)
 		if sim.state() != "sliding":
 			_end_slide_state()
-		_handle_walls()
 		return _update_firing(dt, p, _slide_aimed(pos, p))
 	# 「攻击滑铲」触发：视线被挡（bot 透视知道玩家在哪）且冷却已过 → 滑铲抢位。
 	if p.slide_attack and _slide_cd <= 0.0 and not p.line_of_sight and _try_attack_slide(pos, p):
 		sim.advance(dt)
-		_handle_walls()
 		return _update_firing(dt, p, false) # 刚注入仍在起步转身段：必然未瞄住，不开火
 	var strafe := float(avoidance.dir)
 	var fwd := _fore_input(p)
 
-	var r := pos.length()
-	if r >= MovementSimulator.ARENA_RADIUS - WALL_EPS:
-		# 贴墙内拐：本帧输入整体替换为「朝圆心」——速度弧线回内、不沿墙切线滑行。
-		var inward := MovementSimulator.world_to_local(-pos.x / r, -pos.y / r, sim.get_facing())
-		strafe = inward.x
-		fwd = inward.y
-	else:
-		# 空中机动（票 12 / ADR-0027）：前后输入归零——空中无加减速，前向输入只会把速度
-		# 整体拉向面朝方向（bot 面朝玩家 = 空中朝玩家窜）；侧向直读当前方向——预约变向已在
-		# 升程一半钉点生效，防撞/躲避翻向当帧同步，快照机制随 ADR-0024 分段规则退役。
-		# 贴墙内拐分支整体豁免（安全行为优先），本覆盖只在常规路径生效。
-		if air:
-			fwd = 0.0
-		# 前向探测（ADR-0005）：提前变向，复用撞墙反向的优惠语义。
-		# 承诺窗口内不翻——两个侧向都被探到受阻时，每帧翻向会把速度抖没。
-		var probe_len := _probe_length(p)
-		if probe_len > 0.0 and _flip_hold <= 0.0 and _probe_blocked(pos, strafe, fwd, probe_len):
-			_wall_flip()
-			strafe = float(avoidance.dir)
-			_flip_hold = FLIP_COMMIT
+	# 空中机动（票 12 / ADR-0027）：前后输入归零——空中无加减速，前向输入只会把速度
+	# 整体拉向面朝方向（bot 面朝玩家 = 空中朝玩家窜）；侧向直读当前方向——预约变向已在
+	# 升程一半钉点生效，防撞/躲避翻向当帧同步，快照机制随 ADR-0024 分段规则退役。
+	if air:
+		fwd = 0.0
+	# 后退衰减（票 02 / ADR-0031）：前后分量的**负半轴**（退开）按「离墙余量」削减，
+	# 余量耗尽即零——替代旧「贴墙内拐」的泄压方式。两种「移动模式」（保持距离 / 动态游走
+	# 的走廊硬约束）都汇到这个前后分量上，故一处注入即全覆盖；侧向不受影响，
+	# 于是贴墙时表现为「减速停退 + 沿墙内侧滑」。
+	fwd *= _retreat_taper(pos, fwd, p.body_radius)
+	# 前向探测（ADR-0005）：提前变向，复用撞墙反向的优惠语义。
+	# 承诺窗口内不翻——两个侧向都被探到受阻时，每帧翻向会把速度抖没。
+	var probe_len := _probe_length(p)
+	if probe_len > 0.0 and _flip_hold <= 0.0 and _probe_blocked(pos, strafe, fwd, probe_len):
+		_wall_flip()
+		strafe = float(avoidance.dir)
+		_flip_hold = FLIP_COMMIT
 
 	var ctl := MovementSimulator.MoveControl.new()
 	ctl.right = strafe
@@ -236,7 +241,6 @@ func update(dt: float, p: Perception) -> Array:
 	sim.set_zoom(1.0 if p.ads else 0.0) # 常驻开镜只体现为移速封顶，无视觉开镜
 	sim.advance(dt)
 
-	_handle_walls()
 	return _update_firing(dt, p)
 
 ## 受一次伤害。返回本次是否致命。「致命」那一发不躲避；非致命则躲避 + 受击反击。
@@ -323,51 +327,61 @@ static func probe_length_for(layout: int) -> float:
 
 ## 沿本帧移动方向探测：解析边界优先，其次交给注入的射线（遮挡物）。
 func _probe_blocked(pos: Vector2, strafe: float, fwd: float, length: float) -> bool:
-	var yaw := sim.get_facing()
-	var c := cos(yaw)
-	var s := sin(yaw)
-	var dx := strafe * c + fwd * -s
-	var dz := strafe * -s + fwd * -c
-	var m := sqrt(dx * dx + dz * dz)
+	var v := _local_to_world(strafe, fwd)
+	var m := v.length()
 	if m < 1e-6:
 		return false
-	var dir := Vector2(dx / m, dz / m)
+	var dir := v / m
 	if _hits_boundary(pos, dir, length):
 		return true
 	return bool(_probe.call(pos, dir, length)) if _probe.is_valid() else false
 
+## 本地输入 `(right, fwd)` 对应的世界方向（未归一化）。
+## **「朝向 → 世界轴」的约定只此一处**（前向 world = `(-sin, -cos)`，右侧 = `(cos, -sin)`，
+## 与 `MovementSimulator` 的 right / fwd 轴约定一致）——前向探测、后退衰减、守卫三处共用。
+func _local_to_world(right: float, fwd: float) -> Vector2:
+	var yaw := sim.get_facing()
+	var c := cos(yaw)
+	var s := sin(yaw)
+	return Vector2(right * c - fwd * s, -right * s - fwd * c)
+
 ## 沿 `dir` 的射线是否在 `length` 内打到半径 `ARENA_RADIUS` 的圆边界。
 func _hits_boundary(pos: Vector2, dir: Vector2, length: float) -> bool:
-	var radius := MovementSimulator.ARENA_RADIUS
-	var b := pos.dot(dir)
-	var disc := b * b - (pos.dot(pos) - radius * radius)
-	if disc < 0.0:
-		return false
-	var t := -b + sqrt(disc)
-	return t > 0.0 and t <= length
+	return _boundary_distance(pos, dir) <= length
 
-func _handle_walls() -> void:
-	if avoidance.dir == AvoidanceController.DIR_NONE:
-		return
-	var pos := sim.position()
-	if pos.length() < MovementSimulator.ARENA_RADIUS - WALL_EPS:
-		return
-	if _pushes_outward(pos, _strafe_dir_vec(avoidance.dir, sim.get_facing())):
-		_wall_flip()
+## 从 `pos` 沿 `dir` 到半径 `ARENA_RADIUS` 圆的**解析距离**（单位）。在圆上或圆外返回 0、
+## 零方向返回 `INF`（两者都视作保守值：「没有余量」/「探不到」）。
+## 「前向探测」的探到判据与「后退衰减」的余量共用这一处数学（ADR-0031）。
+func _boundary_distance(pos: Vector2, dir: Vector2) -> float:
+	var m := dir.length()
+	if m < 1e-9:
+		return INF
+	var d := dir / m
+	var c := pos.dot(pos) - MovementSimulator.ARENA_RADIUS * MovementSimulator.ARENA_RADIUS
+	if c >= 0.0:
+		return 0.0
+	var b := pos.dot(d)
+	return maxf(0.0, -b + sqrt(b * b - c)) # 圆内必有 b² − c > 0（c < 0）
 
-## 「撞墙反向」统一入口（票 12 / ADR-0024）：安全纠正（前向探测 / 贴墙外推 / 物理受阻）
+## 「后退推力」的离墙衰减**系数**（ADR-0031）：`fwd` 为负（退开）时返回 [0,1] 的乘数——
+## 按「离墙余量」等比例削减、余量耗尽即零，是前后轴唯一的泄压阀（避免退到墙边被仿真
+## 径向钳制绞到近零）。`fwd >= 0`（朝玩家）恒返回 1：连线朝场心、天然不出凸圆，且该轴已由前向探测管。
+## `body_radius` = 移动胶囊实际半径：墙实体化后 bot 最多只到 `ARENA_RADIUS − body_radius`。
+func _retreat_taper(pos: Vector2, fwd: float, body_radius: float) -> float:
+	if fwd >= 0.0:
+		return 1.0
+	var margin := _boundary_distance(pos, _local_to_world(0.0, -1.0)) - body_radius
+	return clampf(margin / WALL_MARGIN, 0.0, 1.0)
+
+## 「撞墙反向」统一入口（票 12 / ADR-0024）：安全纠正（前向探测 / 物理受阻）
 ## 不受空中变向钉点管制，翻向当帧生效——空中侧向直读 avoidance.dir，无需额外同步。
 func _wall_flip() -> void:
 	avoidance.wall_flip()
 
-## 「侧向」方向在世界坐标下的单位向量（相对自身朝向，与移动模型的 right 轴约定一致）。
-func _strafe_dir_vec(dir: int, yaw: float) -> Vector2:
-	var c := cos(yaw)
-	var s := sin(yaw)
-	return Vector2(-c, s) if dir < 0 else Vector2(c, -s)
-
+## 向量 `v` 是否把 bot 往墙外推（贴墙守卫用）。带**相对容差**：真·切向时点积只剩
+## 浮点残差（≈1e-13，随朝向角的符号抖动），当成「朝外」会让守卫在正切位置随机生效。
 func _pushes_outward(pos: Vector2, v: Vector2) -> bool:
-	return pos.dot(v) > 0.0
+	return pos.dot(v) > 1e-6 * pos.length() * v.length()
 
 # ---- bot 滑铲（ADR-0016）----
 
@@ -541,7 +555,7 @@ func _roll_jump_wait(p: Perception) -> float:
 # ---- 躲避 ----
 
 ## 被命中时按概率立刻翻向。贴墙且翻出去的新方向朝外时这次不生效
-## （否则下一帧的墙逻辑会把它翻回来，等于骰子白掷却偷偷改了变向计时）。
+## （否则墙会把它翻回来，等于骰子白掷却偷偷改了变向计时）。
 func _try_dodge(p: Perception) -> void:
 	if not alive or avoidance.dir == AvoidanceController.DIR_NONE:
 		return
@@ -549,8 +563,13 @@ func _try_dodge(p: Perception) -> void:
 	if chance <= 0.0:
 		return
 	var pos := sim.position()
-	if pos.length() >= MovementSimulator.ARENA_RADIUS - WALL_EPS:
-		if _pushes_outward(pos, _strafe_dir_vec(-avoidance.dir, sim.get_facing())):
+	# 门限重定基（ADR-0031）：墙实体化后 bot 最多只到 `ARENA_RADIUS − 体型半径`，
+	# 旧门限（`ARENA_RADIUS`）永不触发 = 墙边躲避白掷并静默重置变向计时器，
+	# 这正是当年加守卫要防的事。留 WALL_GUARD_SLOP 容差——物理求解的 safe_margin
+	# 与几何离散都让 bot 停在门限外零点几，差这一丝守卫就永不生效。
+	if pos.length() >= MovementSimulator.ARENA_RADIUS - p.body_radius - WALL_GUARD_SLOP:
+		# 翻向后的新侧向（`-dir`）是否朝墙外——朝外则放弃本次躲避。
+		if _pushes_outward(pos, _local_to_world(-float(avoidance.dir), 0.0)):
 			return
 	# 躲避是方向确定事件（ADR-0024 / 0027）：空中翻向立即生效——空中侧向直读
 	# avoidance.dir（快照已退役），无需同步。
