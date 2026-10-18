@@ -93,6 +93,9 @@ var stage: Stage = Stage.MENU
 var _timer := IntervalTimer.new()
 ## 本次对局是不是「计时会话」里的游玩段（决定 ESC / 段结束的结算口径）。
 var _timer_active := false
+## 「演示模式」（ADR-0033）：F2 在「对局」中切换的会话级开关——视角与开火交给脚本、
+## 左下角字幕提示；不持久化、不进「设置」，离开对局自动关闭。
+var _demo_mode := false
 ## 刚结束那一段的战绩（休息覆盖层显示「本轮战绩」）。
 var _last_round_stats: IntervalTimer.RoundStats = null
 ## 本次会话的自动调径记录（「半径 旧→新」逐段追加，最终结算一并列出）。
@@ -149,6 +152,9 @@ func _notification(what: int) -> void:
 ## 只有对局进行中才推进——主菜单 / 准备段 / 休息段 / 结算时靶被撤下且不结算。
 func _physics_process(delta: float) -> void:
 	if stage != Stage.PLAY:
+		# 离开对局即自动关闭演示模式（ADR-0033）：准备 / 休息 / 结算 / 主菜单都不留它开着。
+		if _demo_mode:
+			_set_demo(false)
 		return
 	_build_perception()
 	for hit in target.tick(delta, _perception):
@@ -156,6 +162,12 @@ func _physics_process(delta: float) -> void:
 	if target.needs_respawn():
 		_respawn_target()
 	match_state.bot_hp = target.hp()
+	if _demo_mode:
+		# 演示模式（ADR-0033）：把本帧的锁定点喂给玩家（推在本节点 tick 之后、玩家 tick 之前）。
+		# 锁定点是 bot 命中体躯干中心的世界坐标——躺姿压深与铲跳升空一并跟随，否则准星会
+		# 锁在空气上、自动开火打空；bot 死亡空窗期喂「无目标」：相机冻结保持，重生后从当前
+		# 姿态重新限速甩向新生点。
+		player.set_demo_target(target.aim_point_world(), target.ai.alive)
 
 ## 表现与热键留在渲染帧：特效的存活时长按渲染 delta 走，不必跟物理帧对齐。
 func _process(delta: float) -> void:
@@ -175,6 +187,8 @@ func _tick_hotkeys() -> void:
 		return
 	if Input.is_action_just_pressed("toggle_fullscreen"):
 		_toggle_fullscreen()
+	if Input.is_action_just_pressed("toggle_demo"):
+		_toggle_demo()
 	if Input.is_action_just_pressed("toggle_settings"):
 		settings_panel.toggle()
 		return
@@ -197,6 +211,20 @@ func _toggle_fullscreen() -> void:
 	window.mode = Window.MODE_EXCLUSIVE_FULLSCREEN
 	var screen := DisplayServer.screen_get_size(window.current_screen)
 	_apply_fullscreen_stretch(screen, GameSettings.fullscreen_resolution(screen, GameSettings.fullscreen_aspect))
+
+## F2 演示模式（ADR-0033）：**只在「对局」中可切**（主菜单 / 准备段 / 休息段 / 结算 /
+## 设置面板按下均无反应），会话级、不持久化、不进「设置」面板；离开对局由
+## `_physics_process` 自动关闭（字幕随之消失）。
+func _toggle_demo() -> void:
+	if stage != Stage.PLAY or settings_panel.visible:
+		return
+	_set_demo(not _demo_mode)
+
+## 开关落到两处：玩家接管视角 / 开火（`demo_active`），HUD 左下角状态字幕。
+func _set_demo(on: bool) -> void:
+	_demo_mode = on
+	player.demo_active = on
+	hud.set_demo_active(on)
 
 ## 「全屏宽高比」切档时由设置面板触发（ADR-0029）：正在独占全屏则立即按新档位
 ## 重设引擎内拉伸；窗口化则仅由下次 F11 生效。
@@ -615,6 +643,11 @@ func _resolve_bot_shot(hit: bool) -> void:
 	if GameSettings.lifesteal_enabled:
 		match_state.heal_bot(BotAi.BOT_DAMAGE) # 「吸血」：bot 命中固定回 25
 	match_state.player_hp = maxi(0, match_state.player_hp - BotAi.BOT_DAMAGE)
+	if _demo_mode:
+		# 演示模式（ADR-0033）：bot 照常开枪、受击红屏照常，只把「死亡」冻住——血量封底 1、
+		# 永不触发「玩家重生」，否则演示会被瞬移重生反复打断（观感与「照常开枪」的反馈都保留）。
+		match_state.player_hp = maxi(1, match_state.player_hp)
+		return
 	if match_state.player_hp <= 0:
 		_respawn_player()
 

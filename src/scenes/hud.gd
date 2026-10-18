@@ -12,6 +12,13 @@ const CROSSHAIR_COLOR := Color(1.0, 1.0, 1.0, 0.92)
 const FONT_SIZE := 16
 const TEXT_COLOR := Color(1.0, 1.0, 1.0, 0.92)
 
+## 演示模式状态字幕（ADR-0033）：左下角一行小字，比主 HUD 数字暗一档、字号更小——
+## 它是状态角标，不该抢对局数字的视觉权重。开关即显即隐，不做淡入淡出。
+const DEMO_FONT_SIZE := 14
+const DEMO_TEXT_COLOR := Color(1.0, 1.0, 1.0, 0.7)
+const DEMO_LABEL := "演示模式已启用"
+const DEMO_MARGIN := 24.0 ## 距屏幕左 / 下边缘的留白（与左上角对局数字同留白口径）
+
 ## 击中提示几何（CONTEXT.md「击中提示」）：白 X 与红 X 的参数互不共享。
 ## `_INNER` 是内端距准星的直线距离，`_ARM` 是斜线段自身的长度（外端 = 内端 + 臂长）。
 const MARKER_INNER_HIT := 22.0
@@ -37,6 +44,7 @@ var _flash := HitFlashTiming.new() ## 受击红屏时序（纯逻辑）
 var _flash_tex: GradientTexture2D ## 边缘红晕的径向渐变纹理（_ready 建一次，绘制时调 modulate）
 var _match: DuelMatch = null
 var _zoom := 0.0 ## 开镜进度（票 07）：白准星透明度 = 1 − 进度，随开关镜平滑淡出/渐回
+var _demo_active := false ## 演示模式状态（ADR-0033）：左下角字幕的显隐
 
 func _ready() -> void:
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -50,6 +58,10 @@ func bind(match_state: DuelMatch) -> void:
 ## 喂开镜进度（main 每帧传 `player.zoom_p`），准星淡出与开镜动画同频（CONTEXT「准星」）。
 func set_zoom(p: float) -> void:
 	_zoom = clampf(p, 0.0, 1.0)
+
+## 演示模式开关（ADR-0033）：由 main 在 F2 切换时喂入，控制左下角状态字幕的显隐。
+func set_demo_active(on: bool) -> void:
+	_demo_active = on
 
 ## 命中 / 击杀事件（受「命中提示」开关控制）。
 func flash(kind: StringName) -> void:
@@ -134,6 +146,17 @@ func _draw_text() -> void:
 		var col: Color = entry[1]
 		draw_string(font, Vector2(24.0, y), text, HORIZONTAL_ALIGNMENT_LEFT, -1, FONT_SIZE, col)
 		y += FONT_SIZE + 6.0
+	# 演示模式字幕走**左下角**（ADR-0033）：与左上角的对局数字分居两角、互不干扰。
+	if _demo_active:
+		draw_string(
+			font,
+			Vector2(DEMO_MARGIN, size.y - DEMO_MARGIN),
+			DEMO_LABEL,
+			HORIZONTAL_ALIGNMENT_LEFT,
+			-1,
+			DEMO_FONT_SIZE,
+			DEMO_TEXT_COLOR
+		)
 
 func _lines() -> Array:
 	if _match == null:

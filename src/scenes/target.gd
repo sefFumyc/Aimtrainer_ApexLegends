@@ -203,6 +203,18 @@ func tracer_hit_local(world: Vector3) -> Vector3:
 func tracer_hit_world(local: Vector3) -> Vector3:
 	return _hit_body.to_global(local)
 
+## 演示模式（ADR-0033）的锁定点：命中体**当前悬于地面之上那一段**的垂直中心，换算到世界。
+## 站立 ≈ 36（躯干中心）；滑铲躺姿压深 −50 时可见段只剩 0–22、中心抬到 11 仍落在身体上；
+## 铲跳升空时随命中体整体跟抬。之所以不用固定的「世界坐标 + 躯干高度」：躺姿压深与升空
+## 会让准星锁在空气里，自动开火必打空。纯读数：不参与任何碰撞与命中判定。
+func aim_point_world() -> Vector3:
+	var base := _hit_body.position.y # 躺姿压深（SLIDE_SINK）+ 铲跳升空（lift）
+	var bottom := maxf(base, 0.0)
+	var top := base + Physique.TOTAL_HEIGHT
+	var point := _hit_body.to_global(Vector3.ZERO)
+	point.y = (bottom + top) * 0.5
+	return point
+
 ## 命中体节点：开火射线打到的是它（不是本节点），调用方用它来判断「命中的是不是这个靶」。
 func hit_body() -> CollisionObject3D:
 	return _hit_body
