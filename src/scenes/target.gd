@@ -64,15 +64,12 @@ const CLIP_BACKWARD := "Walking_Backwards"
 const CLIP_SLIDE_DOWN := "Lie_Down"
 const CLIP_SLIDE_IDLE := "Lie_Idle"
 const CLIP_SLIDE_UP := "Lie_StandUp"
-## 躺地三件套快放倍数（ADR-0018）：×4 → 0.75s 倒平、×2.5 → 0.93s 爬起；躺姿循环与跳跃两件套原速。
+## 躺地三件套快放倍数（ADR-0018）：×4 → 0.75s 倒平、×2.5 → 0.93s 爬起；躺姿循环原速。
 const SLIDE_DOWN_SPEED := 4.0
 const SLIDE_UP_SPEED := 2.5
 ## 滑铲躺姿的命中体压深（ADR-0018）：躺姿视觉最高点 ≈20u，72−50=22 的判定轮廓与之贴合。
 ## 不复用玩家的 CROUCH_HEIGHT（−30 是坐姿口径，坐改躺后判定会悬在半空）。
 const SLIDE_SINK := -50.0
-## 铲跳升空（ADR-0018）：从躺姿平滑过渡回正常跳跃——起跳（一次性）→ 空中（循环）。
-const CLIP_JUMP_START := "Jump_Start"
-const CLIP_JUMP_IDLE := "Jump_Idle"
 ## 姿势机切换动作用的过渡时长：比走跑混合（250/200ms）更快，滑铲 0.35–0.9s 里不显拖沓。
 const SLIDE_POSE_BLEND := 0.15
 ## 本票会播的全部动作：KayKit 的 GLB 里它们是按「不循环」导入的，`_setup_animation` 要逐个改成循环。
@@ -114,14 +111,11 @@ var _gun_muzzle: Node3D
 var _pose := PoseBlend.new()
 ## 当前在播的动作名（只在切换时调 `play`，避免每帧重启动画）。
 var _clip := ""
-## 滑铲姿势机状态（ADR-0017 引入、ADR-0018 换躺姿）：NONE = 不接管（常规走/跑）。
-enum SlidePose { NONE, DOWN, LIE, UP, RISE, AIR }
+## 滑铲姿势机状态（ADR-0017 引入、ADR-0018 换躺姿、ADR-0032 铲跳交回常规）：NONE = 不接管（常规走/跑）。
+enum SlidePose { NONE, DOWN, LIE, UP }
 var _slide_pose := SlidePose.NONE
 ## 模型是否带齐躺地三件套（缺任何一支则姿势机不接管，回落到只压低命中体）。
 var _slide_pose_clips := false
-## 模型是否带齐跳跃两件套（铲跳升空用；缺失则 DOWN/LIE 态遇升空会在空中播爬起收尾——
-## 防御路径，Knight.glb 带齐两件套，不会走到）。
-var _jump_pose_clips := false
 
 func _ready() -> void:
 	visible = false
@@ -254,7 +248,7 @@ func _apply_motion(delta: float, before: Vector2, perception: BotAi.Perception) 
 	ai.sim.sync_position(Vector2(global_position.x, global_position.z))
 	# 滑铲躺姿命中体压深（ADR-0018：SLIDE_SINK 独立常量）+ 铲跳升空抬升（ADR-0018：
 	# sim 跳跃高度喂给命中体与视觉模型，所见即所中；影子留地、移动碰撞贴地不跟）。
-	# 铲跳空中压深解除：姿势已过渡回跳跃站姿，命中体按站姿判定（「空中打其身体上部照样算中」）；
+	# 铲跳空中压深解除（ADR-0032：空中不再播躺姿），命中体按站姿判定（「空中打其身体上部照样算中」）；
 	# sim 的 crouch_p 只在地面积分、空中会冻结在 1，不能直接乘。
 	var sink := 0.0 if ai.sim.state() == "airborne" else SLIDE_SINK * ai.sim.crouch_progress()
 	var lift := ai.sim.jump_height()
@@ -284,7 +278,7 @@ func _apply_pose(delta: float) -> void:
 	var v := ai.sim.velocity()
 	var local := MovementSimulator.world_to_local(v.x, v.y, ai.sim.get_facing())
 	var frame := _pose.update(delta, ai.sim.speed(), local.x, local.y)
-	# 滑铲姿势机（ADR-0018）：返回非空 = 接管本帧动作（躺地 / 跳跃 / 爬起），并压掉侧偏。
+	# 滑铲姿势机（ADR-0018，ADR-0032 起铲跳空中交回常规）：返回非空 = 接管本帧动作（躺地 / 爬起），并压掉侧偏。
 	var pose_clip := _slide_pose_clip()
 	if _anim != null:
 		var clip := _clip_for(frame.motion, local.y)
@@ -309,9 +303,13 @@ func _apply_pose(delta: float) -> void:
 		_pose_lean.apply(0.0 if pose_clip != "" else frame.lean)
 	_sync_gun() # 手动同步枪到右手骨（为什么不用 BoneAttachment3D，见 _attach_weapon）
 
-## 滑铲姿势机（ADR-0017 引入、ADR-0018 换躺姿）：返回本帧应播的动作；空串 = 不接管（常规走/跑）。
-## 迁移只由 `ai.sim.state()` 驱动：sliding → 躺（Down→Idle）；铲跳升空 → 跳（Start→Idle）；
-## 爬起 → Up 一次性收尾；落地 → 直接回常规。一次性动作播完用播放位置判据（MANUAL 推进不依赖信号）。
+## 滑铲姿势机（ADR-0017 引入、ADR-0018 换躺姿、ADR-0032 铲跳交回常规）：返回本帧应播的动作；
+## 空串 = 不接管（常规走/跑）。迁移只由 `ai.sim.state()` 驱动：sliding → 躺（Down→Idle）；
+## 滑铲结束（地面）→ Up 一次性收尾；**铲跳升空 → 立即交回常规动作**。
+## ADR-0032：铲跳空中不持有任何专用 clip——连跳链里 state 恒为 "airborne"（落地帧立即起跳），
+## 专用循环动作会被长期占用并定格，铲跳空中从此与普通跳（ADR-0023 空中零特判）同一条路径。
+## （唯一未覆盖：UP 收尾被普通跳打断 → 空中播完 Lie_StandUp，有界 ≤0.93s，见 ADR-0032 已知边界。）
+## 一次性动作播完用播放位置判据（MANUAL 推进不依赖信号）。
 func _slide_pose_clip() -> String:
 	if not _slide_pose_clips:
 		return ""
@@ -328,17 +326,17 @@ func _slide_pose_clip() -> String:
 					_slide_pose = SlidePose.LIE
 					return CLIP_SLIDE_IDLE
 				return CLIP_SLIDE_DOWN
-			if state == "airborne" and _jump_pose_clips: # 主路径：倒地未播完（0.75s）即到铲跳时刻（≤0.6s）
-				_slide_pose = SlidePose.RISE
-				return CLIP_JUMP_START
+			if state == "airborne": # 铲跳（主路径：倒地未播完 0.75s 即到铲跳时刻 ≤0.6s）：交回常规
+				_slide_pose = SlidePose.NONE
+				return ""
 			_slide_pose = SlidePose.UP
 			return CLIP_SLIDE_UP
 		SlidePose.LIE:
 			if state == "sliding":
 				return CLIP_SLIDE_IDLE
-			if state == "airborne" and _jump_pose_clips: # 铲跳：躺姿 → 正常跳跃（平滑过渡）
-				_slide_pose = SlidePose.RISE
-				return CLIP_JUMP_START
+			if state == "airborne": # 铲跳：躺姿升空即交回常规走/跑
+				_slide_pose = SlidePose.NONE
+				return ""
 			_slide_pose = SlidePose.UP
 			return CLIP_SLIDE_UP
 		SlidePose.UP:
@@ -349,19 +347,6 @@ func _slide_pose_clip() -> String:
 				_slide_pose = SlidePose.NONE
 				return ""
 			return CLIP_SLIDE_UP
-		SlidePose.RISE:
-			if state == "airborne":
-				if _pose_anim_done(CLIP_JUMP_START):
-					_slide_pose = SlidePose.AIR
-					return CLIP_JUMP_IDLE
-				return CLIP_JUMP_START
-			_slide_pose = SlidePose.NONE # 起跳被卡没升空 / 已落地：回常规
-			return ""
-		SlidePose.AIR:
-			if state == "airborne":
-				return CLIP_JUMP_IDLE
-			_slide_pose = SlidePose.NONE # 落地恢复站立（常规走跑接管）
-			return ""
 	return ""
 
 ## 姿势机动作的播放倍速（ADR-0018）：倒地/爬起快放（原速远超滑铲时长），其余原速。
@@ -422,10 +407,6 @@ func _setup_animation() -> void:
 		and _anim.has_animation(CLIP_SLIDE_IDLE) and _anim.has_animation(CLIP_SLIDE_UP)
 	if _slide_pose_clips:
 		_anim.get_animation(CLIP_SLIDE_IDLE).loop_mode = Animation.LOOP_LINEAR
-	# 铲跳升空两件套（ADR-0018）：Start 一次性、Idle 循环；缺失则铲跳期间保持躺姿收尾。
-	_jump_pose_clips = _anim.has_animation(CLIP_JUMP_START) and _anim.has_animation(CLIP_JUMP_IDLE)
-	if _jump_pose_clips:
-		_anim.get_animation(CLIP_JUMP_IDLE).loop_mode = Animation.LOOP_LINEAR
 	_pose_lean = PoseLean.new()
 	_pose_lean.setup(skeleton)
 	_attach_weapon(skeleton)

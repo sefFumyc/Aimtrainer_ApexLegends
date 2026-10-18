@@ -96,3 +96,15 @@ Status: done
 **测试**：`test_movement.gd` 新增铲跳垂直轨迹 1 条（升到解析峰值 286²/2/790 ≈ 51.8u——实测 51.23，半隐式欧拉子步积分偏低 ~0.5，容差 1.0——后落地归零）。
 
 **验收**：GUT 全量回归 164 tests / 1187 asserts 全绿（本轮 movement +1）。提交见 `git log`。
+
+## Comments / 2026-10-18 — 表现三轮：铲跳空中交回常规动作（ADR-0032，agent）
+
+用户实测反馈：把 bot 跳跃间隔压成连跳参数、且 bot 由滑铲起跳（铲跳）时，空中姿势「像 T-pose」——细看是**完全不动**；而由走路起跳（普通跳）时表现正常，用户明确以普通跳为「正常跳跃动画」的基准。
+
+**根因（代码级）**：① **连跳链里 `ai.sim.state()` 恒为 `"airborne"`**——`movement.gd` 落地子步只清 `_airborne`、不动 `_state`，而连跳落地帧立即起跳（票 12 的 bhop 锁存），`_step_ground` 跳跃分支又把 `_state` 写回 `"airborne"`（连跳链确实没有地面帧，语义正确）；② **`SlidePose.AIR` 的退出条件正是 `state != "airborne"`** → 永续，它返回的 `Jump_Idle` 是一支 1.07s / 33 帧的**近静止**循环（glTF 剖析 + FK 探针：整支动作手骨相对胸骨位移仅 ~0.1–0.3 单位，臂展本身 ~1.2–1.5）→ 模型停在「张臂平衡姿」近乎不动；③ 非连跳时落地后 `state` 回地面态、AIR 当帧退出 → 回常规走/跑动作，所以只有该组合复现。
+
+**修法（ADR-0032）**：`target.gd` 删 `SlidePose.RISE` / `AIR` 与 `CLIP_JUMP_START` / `CLIP_JUMP_IDLE`；`DOWN` / `LIE` 遇 `state == "airborne"`（按构造即铲跳）回 `NONE` 返回空串，常规走/跑动作立即接管（躺→跑只靠 `frame.blend` 交叉淡化）。`_jump_pose_clips` 自检与 `Jump_Idle` 的 `LOOP_LINEAR` 设置一并删除。铲跳空中从此与普通跳（ADR-0023「空中零特判」）同一条路径。
+
+**纯表现层**：`bot_ai.gd` 滑铲/铲跳决策与 `movement.gd` 移动模型零改动，无测试引用姿势机（GUT 基线不受影响）。
+
+**验收**：① 根因前提探针实测——`MovementSimulator` 直驱仿真 900 帧的 `state()` 分布 `{sprinting: 46, airborne: 854}`，首次升空后地面帧 0 帧、连续 854 帧 `airborne`（坐实连跳链里 `state` 恒为 `airborne`）；② 修后静态枚举：`state == "airborne"` 下姿势机无任何分支返回专用 clip；③ `--headless --import` 零错误 + GUT 227 tests / 1418 asserts 全绿；④ 最终观感由用户在连跳参数 + 铲跳起手下实测确认。

@@ -624,3 +624,42 @@ func test_injected_slide_jump_inherits_direction() -> void:
 	assert_eq(sim.state(), "airborne", "铲跳升空")
 	assert_almost_eq(atan2(sim.velocity().y, sim.velocity().x), heading, 1e-3, "继承滑铲方向")
 	assert_almost_eq(sim.vertical_speed(), MovementSimulator.JUMP_VELOCITY - MovementSimulator.GRAVITY * 0.02, 0.5, "垂直仍 286 起步")
+
+# ---- 连跳链的状态口径（ADR-0032 根因前提）----
+
+func test_bhop_chain_has_no_ground_state_frames() -> void:
+	# 落地帧同帧起跳（bot 的连跳锁存）的整条链里，`state()` 恒为 "airborne"：落地子步只清 `_airborne`、
+	# 不动 `_state`，同帧下一子步的 `_step_ground` 立即再起跳又写回 "airborne"——从外面读不到地面态。
+	# 滑铲姿势机的空中分支退出条件正是 `state != "airborne"`（ADR-0032），此用例即那份前提的回归网。
+	var sim := MovementSimulator.new()
+	var dt := 1.0 / 60.0
+	var jumped := false
+	var first_air := -1
+	var air_run := 0
+	var max_air := 0
+	var ground_after_first_air := 0
+	for i in 900:
+		var c := ctl(0.0, 1.0, true)
+		if sim.airborne():
+			# 预测本帧落地（落地子步发生在 advance 内部），同帧按下跳跃 = 落地零间隙起跳
+			var vz_next: float = sim.vertical_speed() - MovementSimulator.GRAVITY * dt
+			if sim.height() + vz_next * dt <= 0.0:
+				c.jump = true
+		elif not jumped and sim.speed() > 250.0:
+			c.jump = true # 链首：疾跑近满速后从地面起跳
+			jumped = true
+		sim.set_control(c)
+		sim.advance(dt)
+		if sim.state() == "airborne":
+			if first_air < 0:
+				first_air = i
+			air_run += 1
+			max_air = maxi(max_air, air_run)
+		else:
+			air_run = 0
+			if first_air >= 0:
+				ground_after_first_air += 1
+	assert_true(jumped, "链首应在疾跑近满速时起跳")
+	assert_true(first_air > 0, "起跳后应升空")
+	assert_eq(ground_after_first_air, 0, "连跳链中不应出现任何地面态帧")
+	assert_true(max_air > 600, "升空后应长期保持 airborne（姿势机的空中分支因此会被长期持有）")
