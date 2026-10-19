@@ -163,11 +163,12 @@ func _physics_process(delta: float) -> void:
 		_respawn_target()
 	match_state.bot_hp = target.hp()
 	if _demo_mode:
-		# 演示模式（ADR-0033）：把本帧的锁定点喂给玩家（推在本节点 tick 之后、玩家 tick 之前）。
-		# 锁定点是 bot 命中体躯干中心的世界坐标——躺姿压深与铲跳升空一并跟随，否则准星会
-		# 锁在空气上、自动开火打空；bot 死亡空窗期喂「无目标」：相机冻结保持，重生后从当前
-		# 姿态重新限速甩向新生点。
-		player.set_demo_target(target.aim_point_world(), target.ai.alive)
+		# 演示模式（ADR-0033 / ADR-0034）：把本帧的锁定点与「可见性」喂给玩家（推在本节点 tick
+		# 之后、玩家 tick 之前）。锁定点是 bot 命中体躯干中心的世界坐标——躺姿压深与铲跳升空
+		# 一并跟随，否则准星会锁在空气上、自动开火打空。bot 死亡空窗期喂「无目标」：相机冻结
+		# 保持，重生后从当前姿态重新限速甩向新生点；被「遮挡物」/「围墙」挡住则喂「不可见」：
+		# 不锁定、不按住开火，拉枪带惯性滑行收住。
+		player.set_demo_target(target.aim_point_world(), target.ai.alive, _player_sees_target())
 
 ## 表现与热键留在渲染帧：特效的存活时长按渲染 delta 走，不必跟物理帧对齐。
 func _process(delta: float) -> void:
@@ -691,6 +692,17 @@ func _bot_has_sight() -> bool:
 	query.exclude = [target.get_rid()]
 	var hit := player.get_world_3d().direct_space_state.intersect_ray(query)
 	return hit.is_empty() or hit["collider"] == player
+
+## 「可见性」（ADR-0034）：与「视线判定」方向相反——玩家眼位 → bot 瞄准点，先撞到的若不是
+## bot 命中体就是被「遮挡物」/「围墙」挡了。只算几何遮挡、**不算** FOV（bot 不在画面里不算
+## 看不见，相机本就一直在追它）；单根射线射向瞄准点，「锁定」与「开火」共用它。
+func _player_sees_target() -> bool:
+	var query := PhysicsRayQueryParameters3D.create(
+		player.eye_position(), target.aim_point_world(), WORLD_LAYER | BOT_LAYER
+	)
+	query.exclude = [player.get_rid()]
+	var hit := player.get_world_3d().direct_space_state.intersect_ray(query)
+	return hit.is_empty() or hit["collider"] == target.hit_body()
 
 # ---- 音频：定频资产入库，音高微差靠播放器 pitch_scale，不预生成变体（ADR-0012）----
 

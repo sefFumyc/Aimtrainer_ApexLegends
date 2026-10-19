@@ -62,10 +62,13 @@ var _recoil_yaw := 0.0
 ## 滑铲镜头动态的当前偏移量（渲染专用，票 07）。
 var _slide_roll := 0.0
 var _slide_fov := 0.0
-## 演示模式的锁定点与「有没有目标」（ADR-0033）：由 `main` 每物理帧喂入——空窗期
-## （bot 死亡）无目标 → 冻结保持且不开火。
+## 演示模式的锁定点与状态（ADR-0033 / ADR-0034）：由 `main` 每物理帧喂入——bot 死亡空窗
+## （无目标）→ 冻结保持且不开火；被「遮挡物」/「围墙」挡住（不可见）→ 不锁定、不按开火。
 var _demo_point := Vector3.ZERO
 var _demo_has_target := false
+var _demo_visible := false
+## 演示模式的追踪状态机（三态 + 宽限 + 滑行，ADR-0034）：纯逻辑类，场景侧只进不出。
+var _demo_aim := DemoAim.new()
 
 ## 演示模式（ADR-0033）：开启时由脚本接管**视角**与**开火**——`main` 每物理帧喂锁定点，
 ## 本节点用 `DemoAim` 做限速平滑跟枪、并在瞄到位时自动开火；移动 / 跳跃 / 蹲滑铲 / 开镜 /
@@ -73,10 +76,12 @@ var _demo_has_target := false
 var demo_active := false
 
 ## 喂本帧的锁定点（`main` 在 bot 推进之后、本节点 tick 之前调用）：`point` 是 bot 命中体
-## 躯干中心的世界坐标；空窗期传 `has_target = false` 让相机冻结保持。
-func set_demo_target(point: Vector3, has_target: bool) -> void:
+## 躯干中心的世界坐标；空窗期传 `has_target = false` 让相机冻结保持；`visible` 是本帧的
+## 「可见性」（ADR-0034）——被「遮挡物」/「围墙」挡住则传 `false`，拉枪转滑行收住且不开火。
+func set_demo_target(point: Vector3, has_target: bool, visible: bool) -> void:
 	_demo_point = point
 	_demo_has_target = has_target
+	_demo_visible = visible
 
 func _ready() -> void:
 	# 主相机不看武器层；武器相机只看武器层（ADR-0008 的几何隔离）。
@@ -137,13 +142,15 @@ func _tick_look(delta: float) -> void:
 	var k := GAMEPAD_LOOK_BASE * _pad_sensitivity() * delta
 	apply_look(-x * k, -y * k)
 
-## 演示模式的视角接管（ADR-0033）：写在 `_tick_look` 的位置上——随后 `_tick_move`
-## 写相机旋转用的就是本帧新朝向。限速 + 指数缓动由纯逻辑类 `DemoAim` 给出（玩家视角输入
-## 同时被忽略，见 `_unhandled_input`）。
+## 演示模式的视角接管（ADR-0033 / ADR-0034）：写在 `_tick_look` 的位置上——随后 `_tick_move`
+## 写相机旋转用的就是本帧新朝向。三态（看得见跟枪 / 看不见滑行收住 / 死亡空窗冻结）与宽限、
+## 指数滑行都由纯逻辑类 `DemoAim` 给出（玩家视角输入同时被忽略，见 `_unhandled_input`）。
 func _tick_demo_aim(delta: float) -> void:
-	var out := DemoAim.step(eye_position(), _demo_point, yaw, pitch, delta, _demo_has_target)
+	var out := _demo_aim.update(
+		eye_position(), _demo_point, yaw, pitch, delta, _demo_has_target, _demo_visible
+	)
 	yaw = out.x
-	pitch = out.y
+	pitch = clampf(out.y, -PITCH_LIMIT, PITCH_LIMIT)
 
 # ---- 开镜 ----
 
@@ -271,14 +278,15 @@ func _tick_weapon(delta: float) -> void:
 	var held := Input.is_action_pressed("fire")
 	var edge := Input.is_action_just_pressed("fire")
 	if demo_active:
-		# 演示模式（ADR-0033）：玩家的开火输入让位，脚本在「瞄到位」时才击发。非全自动武器
-		# 每帧都算作一次点击——`Weapon` 的缓冲语义会把它自动压到该枪的最高射速（手枪 3 发/秒、
-		# 冲锋枪按组间节奏连组）；步枪是按住连射，直接吃 `held`。未到位则两者皆假、不开火。
-		var on_target := DemoAim.on_target(
-			eye_position(), _demo_point, yaw, pitch, _demo_has_target
+		# 演示模式（ADR-0033 / ADR-0034）：玩家的开火输入让位，脚本在「瞄到位 ∧ 看得见」时才击发。
+		# 非全自动武器每帧都算作一次点击——`Weapon` 的缓冲语义会把它自动压到该枪的最高射速
+		# （手枪 3 发/秒、冲锋枪按组间节奏连组）；步枪是按住连射，直接吃 `held`。
+		# 未到位或被「遮挡物」/「围墙」挡住则两者皆假、不开火——看不见就一颗子弹都不出膛。
+		var can_fire := DemoAim.on_target(
+			eye_position(), _demo_point, yaw, pitch, _demo_has_target, _demo_visible
 		)
-		held = on_target
-		edge = on_target
+		held = can_fire
+		edge = can_fire
 	# 手枪/冲锋枪是点击边沿武器：`press()` 返回 true 表示「冷却就绪、当场开火」，
 	# 返回 false 表示冷却中已缓冲（手枪一发 / 冲锋枪一整组，交给 advance 补发）。
 	if not Weapon.automatic(weapon) and edge:
