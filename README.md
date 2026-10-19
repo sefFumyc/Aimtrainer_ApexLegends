@@ -1,4 +1,4 @@
-# Aim Trainer（Apex 移动手感）
+# Aim Trainer（Apex Legends）
 
 FPS 瞄准练习游戏：玩家与一个会走位、会滑铲、会跳的移动bot对枪。
 
