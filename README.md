@@ -66,7 +66,9 @@ AGENTS.md      仓库约定与 agent 工作流
 - **Kenney Blaster Kit 2.1**（CC0 1.0）— 步枪 / 手枪 / 冲锋枪模型。
 - **KayKit Character Pack: Adventurers 1.0**（CC0 1.0）— Knight 角色模型（绑骨 + 多段动画）。
 
-均为 CC0，可商用、免署名；来源、许可文件与入库体积见 [assets/third_party/README.md](assets/third_party/README.md)。仓库当前未附带整体开源许可文件。
+均为 CC0，可商用、免署名；来源、许可文件与入库体积见 [assets/third_party/README.md](assets/third_party/README.md)。
+
+本仓库自身代码以 [MIT 协议](LICENSE) 发布。
 
 ## 技术栈
 
